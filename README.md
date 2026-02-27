@@ -2,7 +2,7 @@
 
 A real-time multiplayer 3D game built with [Threlte](https://threlte.xyz) (Three.js for Svelte) and [Rivet Actors](https://rivet.gg) via **`@rivetkit/svelte`**. Players control glowing marbles on a circular floating arena — push opponents off the edge to score.
 
-https://github.com/user-attachments/assets/placeholder
+**Live demo:** [rivet-game.vercel.app](https://rivet-game.vercel.app)
 
 ## What This Demonstrates
 
