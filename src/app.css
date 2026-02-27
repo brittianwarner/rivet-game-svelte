@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+.dark {
+  --background: oklch(0.145 0.02 260);
+  --foreground: oklch(0.95 0.01 230);
+  --card: oklch(0.17 0.025 255);
+  --card-foreground: oklch(0.95 0.01 230);
+  --popover: oklch(0.17 0.025 255);
+  --popover-foreground: oklch(0.95 0.01 230);
+  --primary: oklch(0.666 0.185 237);
+  --primary-foreground: oklch(0.15 0.02 240);
+  --secondary: oklch(0.19 0.03 250);
+  --secondary-foreground: oklch(0.95 0.01 230);
+  --muted: oklch(0.15 0.02 255);
+  --muted-foreground: oklch(0.75 0.04 230);
+  --accent: oklch(0.19 0.03 250);
+  --accent-foreground: oklch(0.95 0.01 230);
+  --border: oklch(0.30 0.04 245);
+  --input: oklch(0.30 0.04 245);
+  --destructive: oklch(0.65 0.24 25);
+  --destructive-foreground: oklch(1 0 0);
+
+  --color-bg: var(--background);
+  --color-surface: var(--card);
+  --color-border: var(--border);
+  --color-text: var(--foreground);
+  --color-text-muted: var(--muted-foreground);
+  --color-accent: var(--primary);
+  --color-accent-dim: oklch(0.666 0.185 237 / 0.25);
+  --color-danger: var(--destructive);
+}
+
+@layer base {
+  body {
+    font-family: var(--font-heading);
+    background:
+      radial-gradient(
+        1200px 700px at 50% -10%,
+        oklch(0.22 0.06 250) 0%,
+        oklch(0.17 0.03 255) 35%,
+        oklch(0.145 0.02 260) 75%
+      )
+      no-repeat var(--background);
+  }
+
+  html,
+  body {
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+  }
+}
