@@ -1,6 +1,6 @@
-# Bump — Multiplayer Marble Sumo
+# Marble Soccer — 1v1 Multiplayer Marble Soccer
 
-A real-time multiplayer 3D game built with [Threlte](https://threlte.xyz) (Three.js for Svelte) and [Rivet Actors](https://rivet.gg) via **`@rivetkit/svelte`**. Players control glowing marbles on a circular floating arena — push opponents off the edge to score.
+A real-time 1v1 3D marble soccer game built with [Threlte](https://threlte.xyz) (Three.js for Svelte) and [Rivet Actors](https://rivet.gg) via **`@rivetkit/svelte`**. Players control glowing marbles on a rectangular walled field — push a lighter ball into the opponent's goal. First to 5 wins.
 
 **Live demo:** [rivet-game.vercel.app](https://rivet-game.vercel.app)
 
@@ -14,7 +14,7 @@ This game is a reference implementation showcasing **`@rivetkit/svelte`** — th
 - **`onEvent`** — subscribing to real-time actor broadcasts
 - **Proxy-forwarded actions** — calling actor methods directly (`room.sendInput()`, `lobby.createRoom()`)
 - **Reactive `MaybeGetter` args** — `useActor(() => ({ name: "gameRoom", key: [roomId] }))` re-subscribes when `roomId` changes
-- **Server-authoritative physics** — 60 Hz delta-time tick loop running inside a Rivet Actor, clients receive 20 Hz snapshots
+- **Server-authoritative physics** — 60 Hz delta-time tick loop with momentum-based ball collision, wall bouncing, goal detection, and match phase management
 
 ## `@rivetkit/svelte` — How It's Used
 
@@ -47,7 +47,7 @@ The package lives in [`src/lib/rivetkit-svelte/`](src/lib/rivetkit-svelte/) with
 
   // Actor methods are available directly via Proxy
   const rooms = await lobby.listRooms();
-  const result = await lobby.createRoom("My Arena");
+  const result = await lobby.createRoom("Soccer Match");
 
   // Subscribe to real-time events
   lobby.onEvent("roomCreated", () => loadRooms());
@@ -78,11 +78,12 @@ export function useGameRoom(opts) {
 
   // Wire actor events to a reactive store
   room.onEvent("physicsSnapshot", (data) => store.applySnapshot(data));
-  room.onEvent("playerJoined", (data) => store.addPlayer(data.player));
+  room.onEvent("goalScored", (data) => store.applyGoalScored(data));
+  room.onEvent("phaseChanged", (data) => store.applyPhaseChanged(data.phase, data.timeRemaining));
 
   // Call actor actions directly
   const result = await room.getJoinState();
-  room.sendInput({ tx: 0, tz: 0, active: true });
+  room.sendInput({ tx: 0, tz: 0, active: true, dash: false });
 }
 ```
 
@@ -106,22 +107,27 @@ import { actor, event } from "rivetkit";
 export const gameRoom = actor({
   createState: (c) => ({
     players: {},
-    status: "waiting",
+    ball: { position: { x: 0, y: 0.5, z: 0 }, velocity: { x: 0, y: 0, z: 0 } },
+    scores: [0, 0],
+    phase: "waiting",
   }),
   createConnState: (c, params: { playerName: string }) => ({
     playerId: generateId(),
     playerName: params.playerName,
-    input: { tx: 0, tz: 0, active: false },
+    input: { tx: 0, tz: 0, active: false, dash: false },
   }),
   events: {
     physicsSnapshot: event<PhysicsSnapshot>(),
     playerJoined: event<{ player: PlayerState }>(),
-    playerFell: event<{ playerId: string }>(),
+    goalScored: event<GoalScoredEvent>(),
+    gameOver: event<GameOverEvent>(),
+    phaseChanged: event<PhaseChangedEvent>(),
   },
   run: async (c) => {
     // 60 Hz server-authoritative physics loop
     while (!c.aborted) {
-      physicsTick(c, dt, now);
+      phaseTick(c, dt, now);
+      physicsTick(c, dt, now); // players, ball, walls, goals
       if (shouldBroadcast) c.broadcast("physicsSnapshot", snapshot);
       await new Promise((r) => setTimeout(r, 16));
     }
@@ -129,7 +135,7 @@ export const gameRoom = actor({
   actions: {
     getJoinState: (c) => ({ state: c.state, playerId: c.conn.state.playerId }),
     sendInput: (c, input) => { c.conn.state.input = input; },
-    respawn: (c) => { /* respawn logic */ },
+    dash: (c) => { /* dash activation with cooldown */ },
   },
 });
 ```
@@ -176,12 +182,14 @@ rivet-game-svelte/
 │   │   ├── actors/                    # Rivet actor definitions (server-side)
 │   │   │   ├── registry.ts            # setup({ use: { lobby, gameRoom } })
 │   │   │   ├── lobby/                 # Coordinator actor — room listing
-│   │   │   └── game-room/             # Data actor — 60Hz physics tick loop
+│   │   │   └── game-room/             # Data actor — 60Hz physics, goals, phases
 │   │   ├── components/                # Threlte 3D components (visual only)
 │   │   │   ├── Scene.svelte           # Canvas + camera + reads from store
-│   │   │   ├── Arena.svelte           # Circular platform
-│   │   │   ├── Marble.svelte          # 6-layer procedural marble
-│   │   │   ├── PointerInput.svelte    # Mouse/touch → raycast → sendInput
+│   │   │   ├── Field.svelte           # Rectangular pitch with walls + markings
+│   │   │   ├── Goal.svelte            # Goal posts, crossbar, net
+│   │   │   ├── Ball.svelte            # Soccer ball with trail + glow
+│   │   │   ├── Marble.svelte          # 6-layer procedural player marble
+│   │   │   ├── PointerInput.svelte    # Mouse/touch → sendInput + dash
 │   │   │   └── Environment.svelte     # Lights + env map
 │   │   ├── game/                      # Game state + logic
 │   │   │   ├── game-store.svelte.ts   # Reactive $state store
@@ -194,12 +202,31 @@ rivet-game-svelte/
 │   │       └── README.md              # Full API documentation
 │   └── routes/
 │       ├── +layout.svelte             # setupRivetKit initialization
-│       ├── +page.svelte               # Lobby (useActor → lobby)
-│       ├── play/[roomId]/+page.svelte # Game (useGameRoom composable)
+│       ├── +page.svelte               # Lobby (create/join 1v1 matches)
+│       ├── play/[roomId]/+page.svelte # Game (field + HUD + score)
 │       └── api/rivet/[...all]/        # Catch-all → registry.handler()
 ├── package.json
 └── .env.example                       # Rivet Cloud credentials
 ```
+
+## Game Design
+
+**1v1 marble soccer.** Two player marbles push a lighter ball into the opponent's goal. First to 5 wins, or highest score after 3 minutes. Tied at time → golden goal (wider goals, next score wins).
+
+- **Field**: 20×12 rectangular walled pitch with neon markings
+- **Ball**: Radius 0.3, mass 0.3× player — flies when hit by a moving marble
+- **Goals**: 4.0-wide openings in end walls with 2.0-deep pockets
+- **Dash**: Right-click / two-finger tap for 1.5× force burst (3s cooldown)
+- **Solo practice**: Physics runs while waiting for an opponent
+
+| Phase | Description |
+|-------|-------------|
+| `waiting` | Solo practice, waiting for opponent |
+| `countdown` | 3-second countdown, players frozen |
+| `playing` | Active match, timer counting down |
+| `goalScored` | 1.4s celebration, then kickoff reset |
+| `goldenGoal` | Tied at time — wider goals, next goal wins |
+| `finished` | Winner declared |
 
 ## Running Locally
 
@@ -208,7 +235,7 @@ bun install
 bun run dev
 ```
 
-Dev server starts at http://localhost:5175. Open two browser tabs to test multiplayer.
+Dev server starts at http://localhost:5175. Open two browser tabs to test 1v1 multiplayer.
 
 Actors run via Rivet Cloud. Copy `.env.example` to `.env` and set your credentials:
 
