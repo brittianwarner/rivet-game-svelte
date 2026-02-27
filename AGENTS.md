@@ -1,10 +1,10 @@
-# "Bump" — Multiplayer Marble Sumo
+# "Marble Soccer" — 1v1 Multiplayer Marble Soccer
 
-An example real-time multiplayer 3D game built with **Threlte** (Three.js for Svelte) and **Rivet Actors** via `@rivetkit/svelte`. Players control glowing marbles on a circular floating arena using mouse/touch — push opponents off the edge to score.
+A real-time 1v1 3D marble soccer game built with **Threlte** (Three.js for Svelte) and **Rivet Actors** via `@rivetkit/svelte`. Players control glowing marbles on a rectangular walled field, pushing a lighter ball into the opponent's goal.
 
 **Showcases the `@rivetkit/svelte` package** — demonstrates `useActor`, `setupRivetKit`, Svelte context API, and reactive store pattern with Rivet actors.
 
-**Server-authoritative delta-time physics.** All movement, collision, gravity, and fall detection run on the server at ~60 Hz with delta-time scaling (frame-rate independent). Clients send input (pointer target) only while pressing and receive physics snapshots at 20 Hz. No client-side physics engine.
+**Server-authoritative delta-time physics.** All movement, collision, wall bouncing, goal detection, and dash mechanics run on the server at ~60 Hz with delta-time scaling. Clients send input (pointer target + dash) and receive physics snapshots at 20 Hz.
 
 ---
 
@@ -18,65 +18,66 @@ An example real-time multiplayer 3D game built with **Threlte** (Three.js for Sv
 | API Route | SvelteKit `+server.ts` | `/api/rivet/[...all]` → `registry.handler()` |
 | Actor Runtime | Rivet Cloud | Persistent actors, WebSocket connections |
 
-Client → Rivet Cloud (WebSocket) → Actor code (hosted by Rivet Cloud) → Events back to client.
-SvelteKit API route serves metadata and handles Rivet Cloud communication.
-
 ### Four-Layer Architecture
 
 ```
 ┌─────────────────────────┐
-│     GameStore            │  ← Single reactive $state truth
-│  players, localPlayer,   │
-│  remotePlayers, scores   │
+│ GameStore               │ ← Single reactive $state truth
+│ players, ball, scores,  │
+│ phase, timeRemaining    │
 └────────────┬────────────┘
              │
-   ┌─────────┼──────────────────┐
-   │         │                  │
-   ▼         ▼                  ▼
-useGameRoom  Marble.svelte    PointerInput.svelte
-(composable) (visual only)    (mouse/touch → actor)
-actor ↔ store  lerp to server   raycast to ground plane
-events → store  position         sendInput(target)
+    ┌────────┼──────────────────┐
+    │        │                  │
+    ▼        ▼                  ▼
+useGameRoom  Marble/Ball.svelte PointerInput.svelte
+(composable) (visual only)      (mouse/touch → actor)
+actor ↔ store lerp to server   raycast + dash input
+events → store position        sendInput(target, dash)
 ```
 
 ### Data Flow
 
 ```
 PointerInput.svelte
-  ├── Pointer move → raycast onto ground plane (y=0) → visual indicator
-  ├── Only sends input while pressing (not on passive hover)
-  ├── Throttled sendInput({ tx, tz, active }) → actor (20 Hz)
+  ├── Pointer move → raycast onto ground plane (y=0)
+  ├── Left-click: sends input while pressing (not on passive hover)
+  ├── Right-click / two-finger tap: triggers dash
+  ├── Throttled sendInput({ tx, tz, active, dash }) → actor (20 Hz)
   └── Visual target indicator on ground
 
 gameRoom actor (Rivet Cloud, ~60 Hz delta-time tick loop)
-  ├── Check tick-based respawns (no setTimeout)
+  ├── Phase management (waiting/countdown/playing/goalScored/goldenGoal/finished)
   ├── Read connection inputs → apply forces toward target (scaled by dt)
-  ├── Marble-to-marble collision with squared-distance early exit
-  ├── Gravity + exponential drag + ground collision (all scaled by dt)
-  ├── Fall detection (y < -5) → set respawnAt timestamp
+  ├── Handle dash (force multiplier for DASH_DURATION, cooldown per connection)
+  ├── Player-to-player collision (symmetric elastic push)
+  ├── Ball-player collision (momentum-based, asymmetric mass — ball flies)
+  ├── Wall collision (axis-aligned bounce with restitution, goal pocket geometry)
+  ├── Goal detection (ball crosses goal line within goal opening)
+  ├── Match timer countdown, golden goal on tie
   └── Broadcast physicsSnapshot at 20 Hz
 
 useGameRoom composable
-  ├── Single getJoinState() RPC on connect (state + playerId)
-  ├── Receives physicsSnapshot → store.applySnapshot()
-  ├── playerJoined/Left/Fell/Respawned → store mutations
+  ├── Single getJoinState() RPC on connect
+  ├── Receives physicsSnapshot → store.applySnapshot() (players + ball)
+  ├── goalScored/gameOver/phaseChanged → store mutations
   └── Deep $state mutation (no spread needed)
 
-Marble.svelte
-  └── Reads store.players[id].position → lerp via Three.js Group ref (no $state per axis)
+Marble.svelte / Ball.svelte
+  └── Reads store positions → lerp via Three.js Group ref
 ```
 
 ---
 
 ## Project Info
 
-|              |                                                                                                                                        |
+| | |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Package      | `bump-game`                                                                                                                            |
-| Scripts      | `dev`, `build`, `preview`, `check`                                                                                                     |
-| Adapter      | `@sveltejs/adapter-vercel` (deploys to Vercel)                                                                                         |
-| Depends on   | `rivetkit`, `@rivetkit/svelte` (local), `@threlte/core`, `@threlte/extras`, `three`, `runed`                                           |
-| Demonstrates | Delta-time server physics, `useActor` + reactive store, mouse/touch input, Svelte 5 deep reactivity, direct Three.js ref interpolation |
+| Package | `marble-soccer` |
+| Scripts | `dev`, `build`, `preview`, `check` |
+| Adapter | `@sveltejs/adapter-vercel` |
+| Depends on | `rivetkit`, `@rivetkit/svelte` (local), `@threlte/core`, `@threlte/extras`, `three`, `runed` |
+| Demonstrates | Delta-time server physics, momentum-based ball collision, `useActor` + reactive store, dash mechanic, Svelte 5 deep reactivity |
 
 ---
 
@@ -86,49 +87,96 @@ Marble.svelte
 rivet-game-svelte/
 ├── src/
 │   ├── lib/
-│   │   ├── actors/                       # Server-side actor definitions
-│   │   │   ├── registry.ts               # Central actor registry (setup from rivetkit)
+│   │   ├── actors/
+│   │   │   ├── registry.ts
 │   │   │   ├── lobby/
-│   │   │   │   ├── lobby.actor.ts        # Coordinator — room listing
+│   │   │   │   ├── lobby.actor.ts        # Room listing coordinator
 │   │   │   │   └── index.ts
 │   │   │   └── game-room/
-│   │   │       ├── game-room.actor.ts    # Data actor — server physics tick loop
+│   │   │       ├── game-room.actor.ts    # Server physics, goals, phases
 │   │   │       └── index.ts
-│   │   ├── components/                   # Threlte 3D components (visual only)
-│   │   │   ├── Scene.svelte              # Canvas + Camera + reads from store context
-│   │   │   ├── Arena.svelte              # Circular platform (visual, no physics)
-│   │   │   ├── Marble.svelte             # Shared marble visual (local + remote)
-│   │   │   ├── PointerInput.svelte       # Mouse/touch → raycast → sendInput
+│   │   ├── components/
+│   │   │   ├── Scene.svelte              # Canvas + Camera + reads from store
+│   │   │   ├── Field.svelte              # Rectangular pitch with walls + markings
+│   │   │   ├── Goal.svelte               # Goal posts, crossbar, net
+│   │   │   ├── Ball.svelte               # Soccer ball with trail + glow
+│   │   │   ├── Marble.svelte             # Player marble (6-layer elemental core)
+│   │   │   ├── PointerInput.svelte       # Mouse/touch → sendInput + dash
 │   │   │   └── Environment.svelte        # Lighting setup
 │   │   ├── game/
-│   │   │   ├── types.ts                  # Shared types, constants, physics + visual params
+│   │   │   ├── types.ts                  # Shared types, constants, physics params
 │   │   │   ├── game-store.svelte.ts      # GameStore — reactive $state class
 │   │   │   ├── use-game-room.svelte.ts   # useGameRoom — actor↔store composable
-│   │   │   ├── context.ts               # Svelte context helpers (store + controls)
-│   │   │   ├── marble-geometry.ts        # Shared lazy-singleton geometries for marbles
-│   │   │   └── ring-shader.ts           # Fresnel GLSL shaders for orbiting rings
-│   │   └── rivetkit-svelte/              # @rivetkit/svelte package (local copy)
-│   │       ├── src/lib/                  # Package source code
-│   │       ├── dist/                     # Pre-built package output
-│   │       └── package.json
+│   │   │   ├── context.ts               # Svelte context helpers
+│   │   │   ├── marble-geometry.ts        # Shared lazy-singleton geometries
+│   │   │   └── ring-shader.ts           # Fresnel GLSL shaders for rings
+│   │   └── rivetkit-svelte/
 │   ├── routes/
-│   │   ├── api/rivet/[...all]/
-│   │   │   └── +server.ts              # Catch-all → registry.handler()
-│   │   ├── +layout.svelte               # setupRivetKit("/api/rivet") + global styles
-│   │   ├── +layout.ts                   # ssr = false
-│   │   ├── +page.svelte                 # Lobby — room list, create/join
-│   │   └── play/[roomId]/
-│   │       └── +page.svelte             # Game — thin shell (store + scene + HUD)
-│   ├── app.css                          # Dark theme CSS variables + Tailwind
-│   ├── app.d.ts
+│   │   ├── api/rivet/[...all]/+server.ts
+│   │   ├── +layout.svelte
+│   │   ├── +layout.ts
+│   │   ├── +page.svelte                  # Lobby — create/join 1v1 matches
+│   │   └── play/[roomId]/+page.svelte    # Game — field + HUD + score
+│   ├── app.css
 │   └── app.html
-├── .env.example                         # Rivet Cloud env vars documentation
 ├── package.json
-├── svelte.config.js                     # adapter-vercel
+├── svelte.config.js
 ├── vite.config.ts
-├── tsconfig.json
-└── AGENTS.md                            # This file
+└── AGENTS.md
 ```
+
+---
+
+## Game Design
+
+### Core Concept
+
+1v1 marble soccer. Two player marbles push a lighter ball into the opponent's goal. First to 5 wins, or highest score after 3 minutes. Tied at time → golden goal (wider goals, next score wins).
+
+### Field
+
+- **Shape**: 20×12 rectangular (Z = length, X = width), sharp corners
+- **Boundaries**: Solid walls (ball restitution 0.8, player restitution 0.5)
+- **Goals**: 4.0 wide openings in end walls with 2.0 deep pockets
+- **Visual**: Dark neon pitch, `#0A9EF5` field lines, team-color goal tints
+
+### Ball Physics
+
+- **Radius**: 0.3 (smaller than player marble 0.5)
+- **Mass**: 0.3× player mass — flies when hit by a moving player
+- **Collision**: Momentum-based impulse transfer. Ball gets large impulse, player barely affected.
+- **Drag**: 0.035 (same as player) — ball decelerates at moderate rate
+- **Max speed**: 0.65 (faster than player max 0.45)
+- **Last-touched tracking**: Server tracks which player last hit the ball for goal attribution
+
+### Dash Mechanic
+
+- **Activation**: Right-click (desktop) or two-finger tap (mobile)
+- **Effect**: 1.5× force multiplier for 120ms
+- **Cooldown**: 3 seconds
+- **Uses**: Power shots, defensive lunges, repositioning
+
+### Scoring & Match Flow
+
+| Phase | Description |
+|-------|-------------|
+| `waiting` | 0-1 players, waiting for opponent |
+| `countdown` | Both connected, 3-second countdown, players frozen |
+| `playing` | Active physics, timer counting down |
+| `goalScored` | 1.4s celebration + freeze, then reset to kickoff |
+| `goldenGoal` | Timer expired with tie, wider goals, next goal wins |
+| `finished` | Winner declared, back to lobby |
+
+### Kickoff Positions
+
+- Player 1 (team coral): (0, 0.5, -7)
+- Player 2 (team mint): (0, 0.5, +7)
+- Ball: (0, 0.5, 0) center
+
+### Team Colors
+
+- Team 1: `#FF6B4A` (coral)
+- Team 2: `#4DFFB8` (mint)
 
 ---
 
@@ -136,201 +184,120 @@ rivet-game-svelte/
 
 ### GameStore (`game-store.svelte.ts`)
 
-Single `$state` class — the only source of truth for game state on the client.
-
 ```typescript
 class GameStore {
   players = $state<Record<string, PlayerState>>({});
   localPlayerId = $state<string | null>(null);
-  status = $state<"waiting" | "playing" | "finished">("waiting");
+  ball = $state<BallState>({ ... });
+  scores = $state<[number, number]>([0, 0]);
+  phase = $state<GamePhase>("waiting");
+  timeRemaining = $state(180000);
 
-  localPlayer = $derived(/* ... */); // auto-tracks localPlayerId + players
-  remotePlayers = $derived(/* ... */); // all players except local
-  sortedPlayers = $derived(/* ... */); // sorted by score
+  localPlayer = $derived(/* ... */);
+  opponentPlayer = $derived(/* ... */);
+  localTeam = $derived(/* ... */);
 
-  // Single-RPC initialization (replaces getState + getMyPlayer)
-  initFromJoinState(result: JoinStateResult): void {
-    /* sets all fields */
-  }
-
-  // Mutators called by useGameRoom from actor events
-  applySnapshot(snapshot: PhysicsSnapshot): void {
-    /* deep $state mutation */
-  }
-  addPlayer(player: PlayerState): void {
-    /* ... */
-  }
-  // ...
+  applySnapshot(snapshot): void { /* deep $state mutation */ }
+  applyGoalScored(data): void { /* update scores */ }
+  applyPhaseChanged(phase, time): void { /* ... */ }
 }
 ```
 
-Deep property mutation (`store.players[id].position.x = val`) works with Svelte 5's `$state` proxy — no spread or reassignment needed.
-
 ### useGameRoom (`use-game-room.svelte.ts`)
-
-Composable that bridges the actor connection to the store:
 
 - Creates `useActor()` connection to `gameRoom`
 - Wires actor events → store mutations
-- Throttles input sending at 20 Hz via `useThrottle` from Runed
-- Returns `GameRoomControls` (sendInput, respawn, leave, isConnected)
+- Throttles input at 20 Hz, handles dash flag
+- Returns `GameRoomControls` (sendInput, dash, leave, isConnected)
 
 ### Context (`context.ts`)
 
-Two Svelte contexts provided by the page:
-
+Two Svelte contexts:
 - `GAME_STORE_KEY` → `GameStore` instance
 - `GAME_ROOM_KEY` → `GameRoomControls` interface
-
-Components call `getGameStore()` and `getGameRoomControls()` to access them.
 
 ---
 
 ## Actors
 
-Actors are defined using `actor()` and `event()` from `rivetkit`, registered via `setup()`.
-
 ### lobby — Coordinator (key: `["main"]`)
 
-Singleton actor maintaining a list of active game rooms.
+Singleton maintaining list of active rooms.
 
-**State:** `{ rooms: RoomSummary[] }`
-
-**Actions:**
-
-- `listRooms()` — Returns all rooms
-- `createRoom(name)` — Creates room, returns roomId
-- `updateRoom(roomId, patch)` — Sync player count
-- `removeRoom(roomId)` — Remove room from listing
+**Actions:** `listRooms()`, `createRoom(name)`, `updateRoom(roomId, patch)`, `removeRoom(roomId)`
 
 ### gameRoom — Data Actor (key: `[roomId]`)
 
-Per-room actor with **server-authoritative physics**.
+Per-room actor with server-authoritative soccer physics.
 
-**State:** `{ id, name, players: Record<string, PlayerState>, maxPlayers, status, createdAt }`
+**State:** `{ id, name, players, ball, scores, phase, timeRemaining, phaseStartedAt, maxPlayers, createdAt }`
 
-**Connection State:** `{ playerId, playerName, input: PlayerInput }`
+**Connection State:** `{ playerId, playerName, input, dashCooldownUntil, dashStartedAt }`
 
 **Run Loop (~60 Hz, delta-time):**
+1. Phase management (countdown timers, goal celebration, match timer)
+2. Read inputs, apply forces with optional dash multiplier
+3. Player-player collision (elastic push, PUSH_FORCE 0.2)
+4. Ball-player collision (momentum-based, mass ratio 0.3:1.0)
+5. Drag + velocity integration
+6. Wall collision (axis-aligned, goal pocket geometry)
+7. Goal detection → phase transition
+8. Broadcast snapshot at 20 Hz
 
-1. Compute dt = elapsed / 16ms (1.0 = perfect 60 Hz, capped at ~50ms)
-2. Check tick-based respawns (respawnAt timestamp, no setTimeout)
-3. Read inputs from all connections, apply forces scaled by dt
-4. Marble-to-marble collision with squared-distance early exit, push scaled by dt
-   - Record `lastHitBy` / `lastHitAt` on both colliding players for knockoff attribution
-5. Integrate velocity → position with exponential drag and gravity, all scaled by dt
-6. Ground collision (keep on arena if within radius)
-7. Fall detection → set respawnAt = now + RESPAWN_DELAY
-   - If `lastHitBy` exists and `now - lastHitAt < HIT_ATTRIBUTION_WINDOW` (3s), credit attacker with knockoff
-   - Victim: `falls += 1`, `score -= 1`. Attacker: `knockoffs += 1`, `score += 1`
-8. Broadcast `physicsSnapshot` at 20 Hz (includes score, knockoffs, falls per player)
-
-**Actions:**
-
-- `getJoinState()` — Returns full state + local playerId in one RPC
-- `sendInput(input)` — Store mouse/touch target for next tick
-- `respawn()` — Manual respawn request
-
-**Events:**
-
-- `playerJoined` — New player added
-- `playerLeft` — Player disconnected
-- `physicsSnapshot` — Full physics state (positions + velocities)
-- `playerFell` — Player fell off edge
-- `playerRespawned` — Player respawned
+**Events:** `playerJoined`, `playerLeft`, `physicsSnapshot`, `goalScored`, `gameOver`, `phaseChanged`
 
 ---
 
 ## Components
 
-### Scene.svelte
+### Field.svelte
+Rectangular platform (20×12), dark surface with neon markings (center line, center circle, goal boxes). Walls rendered as translucent boxes with team-color gradients near goals.
 
-- `<Canvas>` + `<T.PerspectiveCamera>` with `<OrbitControls>`
-- Reads from `GameStore` context — zero props
-- Renders `<Arena>`, `<Marble>` (local + remote), `<PointerInput>`, `<Environment>`
+### Goal.svelte
+Two goal structures with posts (emissive cylinders), crossbar, wireframe back net, and glowing goal line on floor. Team color indicates which team defends.
 
-### Arena.svelte
-
-- Visual-only circular platform (no physics — server handles collision)
-- Glowing edge ring + grid lines
+### Ball.svelte
+White sphere (radius 0.3) with FakeGlowMaterial. Velocity-scaled emissive intensity. 8-frame trailing points colored by last-toucher's team color.
 
 ### Marble.svelte — "Elemental Core" Design
-
-6-layer procedural marble with velocity-reactive animation. Shared between local and remote players.
-
-**Layers:**
-
-| #   | Layer          | Material / Technique                              | Local vs Remote              |
-| --- | -------------- | ------------------------------------------------- | ---------------------------- |
-| 1   | Inner Core     | MeshBasicMaterial (self-lit, pulsing)             | Same                         |
-| 2   | Frosted Shell  | MeshPhysicalMaterial (clearcoat, no transmission) | Same                         |
-| 3   | Orbiting Rings | TorusGeometry + Fresnel ShaderMaterial            | **3 rings local / 1 remote** |
-| 4   | Particles      | Points + figure-8 lemniscate orbit                | 8 local / 4 remote           |
-| 5   | Glow Aura      | FakeGlowMaterial (@threlte/extras)                | Tighter falloff for local    |
-| 6   | Outline        | Outlines (@threlte/extras)                        | **Local only**               |
-
-**Props:** `{ color, target, isLocal?, name?, knockoffs? }` — `knockoffs` drives marble size scaling via `groupRef.scale`.
-
-**Animation (single `useTask`):** Position lerp → knockoff scale → velocity estimation → speed normalization → core pulse (frequency scales with speed) → ring rotation (speed-reactive) → particle orbit (radius expands with speed) → collision VFX (flash + scale spike on sudden deceleration).
-
-**Supporting files:**
-
-- `marble-geometry.ts` — Lazy singleton shared geometries (core, shell, ring, glow). All 8 marbles reuse same buffers.
-- `ring-shader.ts` — Fresnel GLSL vertex/fragment shaders for neon tube ring effect.
-- `types.ts` — Visual constants (CORE_RADIUS_RATIO, RING_RADIUS_RATIO, GLOW_RADIUS_RATIO, pulse/speed/collision params).
-
-**Performance:** ~12 draw calls per marble. Shared geometry, no post-processing bloom, additive blending for glow. 60fps target with 8 marbles.
+6-layer procedural marble (same as original): inner core, frosted shell, orbiting rings, particles, glow aura, outline (local only). Knockoff scaling removed for soccer.
 
 ### PointerInput.svelte
+Raycasts pointer onto ground plane. Left-click sends movement input. Right-click / two-finger tap triggers dash.
 
-- Listens for pointer events (unified mouse/touch/pen) on the Threlte canvas
-- Raycasts pointer onto ground plane (y=0) using reusable Three.js objects (no per-frame allocations)
-- Only sends input to actor while actively pressing (passive hover is visual only — no network traffic)
-- Renders visual target indicator (ring + dot)
-
-### Environment.svelte
-
-- Ambient light, directional shadow light, rim light, point lights
-- Programmatic PMREMGenerator environment map (dark blue-purple gradient) for PBR clearcoat/transmission reflections
-- No external HDR files — generated once on mount, disposed on unmount
+### Scene.svelte
+Canvas with fixed camera at (0, 22, 14). Renders Field, two Goals, Ball, two Marbles (local + opponent), and PointerInput.
 
 ---
 
-## Scoring & Knockoff System
-
-- **Score** = `knockoffs - falls` (can go negative)
-- **Knockoffs** = times this player knocked someone else off the arena
-- **Falls** = times this player fell off the arena
-- **Attribution**: Server tracks `lastHitBy` per player during collisions. If victim falls within `HIT_ATTRIBUTION_WINDOW` (3s), attacker gets +1 knockoff
-- **Marble size scaling**: Each knockoff grows the marble by `KNOCKOFF_SCALE_GROWTH` (8%), capped at `MAX_MARBLE_SCALE` (2.0x)
-- **Death overlay**: Shows "Bumped by {name}!" if attributed, or "Fell off!" if self-fall
-
-## Spawn System
-
-- **Random spawns**: New players and respawns use rejection sampling within the arena circle (radius 7.5, leaving buffer from edge)
-- **Min distance**: Spawns maintain minimum distance from existing players to avoid overlap
-- **Legacy `SPAWN_POSITIONS`**: No longer used (kept in types.ts as reference)
-
 ## Game Constants
 
-| Constant                      | Value  | Purpose                                        |
+| Constant | Value | Purpose |
 | ----------------------------- | ------ | ---------------------------------------------- |
-| `ARENA_RADIUS`                | 10     | Arena platform radius                          |
-| `FALL_THRESHOLD`              | -5     | Y position for fall detection                  |
-| `INPUT_SEND_INTERVAL`         | 50ms   | Client input send rate (20 Hz)                 |
-| `SERVER_TICK_INTERVAL`        | 16ms   | Server physics tick rate (~60 Hz)              |
-| `SNAPSHOT_BROADCAST_INTERVAL` | 50ms   | Server snapshot broadcast rate (20 Hz)         |
-| `MOVE_FORCE`                  | 0.04   | Per-tick force toward target                   |
-| `MAX_SPEED`                   | 0.45   | Horizontal speed cap                           |
-| `DRAG`                        | 0.035  | Linear friction per tick                       |
-| `GRAVITY`                     | -0.02  | Downward force per tick                        |
-| `PUSH_FORCE`                  | 0.25   | Marble collision push force                    |
-| `MARBLE_RADIUS`               | 0.5    | Marble collision radius                        |
-| `INPUT_DEAD_ZONE`             | 0.5    | Min distance to target before force applies    |
-| `RESPAWN_DELAY`               | 2000ms | Auto-respawn timer after falling               |
-| `HIT_ATTRIBUTION_WINDOW`      | 3000ms | Time window for knockoff attribution after hit |
-| `KNOCKOFF_SCALE_GROWTH`       | 0.08   | Marble scale growth per knockoff (8%)          |
-| `MAX_MARBLE_SCALE`            | 2.0    | Maximum marble scale multiplier                |
+| `FIELD_HALF_LENGTH` | 10 | Z-axis half (field is 20 long) |
+| `FIELD_HALF_WIDTH` | 6 | X-axis half (field is 12 wide) |
+| `GOAL_HALF_WIDTH` | 2.0 | Goal opening half-width |
+| `GOAL_DEPTH` | 2.0 | Goal pocket depth behind wall |
+| `BALL_RADIUS` | 0.3 | Soccer ball radius |
+| `BALL_MASS` | 0.3 | Ball mass (player = 1.0) |
+| `BALL_MAX_SPEED` | 0.65 | Ball max horizontal speed |
+| `BALL_DRAG` | 0.035 | Ball drag per tick |
+| `MARBLE_RADIUS` | 0.5 | Player marble radius |
+| `MOVE_FORCE` | 0.04 | Per-tick force toward target |
+| `MAX_SPEED` | 0.45 | Player horizontal speed cap |
+| `DRAG` | 0.035 | Player linear friction |
+| `PUSH_FORCE` | 0.2 | Player-player collision push |
+| `DASH_FORCE_MULT` | 1.5 | Dash force multiplier |
+| `DASH_DURATION` | 120ms | Dash active time |
+| `DASH_COOLDOWN` | 3000ms | Dash recharge time |
+| `GOALS_TO_WIN` | 5 | Score to win match |
+| `MATCH_TIME_LIMIT` | 180000ms | 3-minute match timer |
+| `GOLDEN_GOAL_HALF_WIDTH` | 2.5 | Wider goals in golden goal |
+| `WALL_RESTITUTION_BALL` | 0.8 | Ball-wall bounce |
+| `WALL_RESTITUTION_PLAYER` | 0.5 | Player-wall bounce |
+| `SERVER_TICK_INTERVAL` | 16ms | ~60 Hz server physics |
+| `SNAPSHOT_BROADCAST_INTERVAL` | 50ms | 20 Hz snapshot broadcast |
+| `INPUT_SEND_INTERVAL` | 50ms | 20 Hz client input |
 
 ---
 
@@ -341,40 +308,20 @@ npm install
 npm run dev
 ```
 
-Starts a single SvelteKit dev server on http://localhost:5175.
-Actors run via Rivet Cloud — set `RIVET_ENDPOINT` and `RIVET_PUBLIC_ENDPOINT` in a `.env` file (see `.env.example`).
-
-Open two browser tabs to http://localhost:5175 to test multiplayer.
-
-## Deployment (Vercel + Rivet Cloud)
-
-1. Connect the GitHub repo to Vercel
-2. Set environment variables on Vercel:
-   - `RIVET_ENDPOINT` = `https://namespace:sk_****@api.rivet.dev`
-   - `RIVET_PUBLIC_ENDPOINT` = `https://namespace:pk_****@api.rivet.dev`
-3. Vercel deploys SvelteKit via `adapter-vercel`
-4. The `/api/rivet/[...all]` serverless function handles Rivet Cloud communication
-5. Clients connect to Rivet Cloud directly for WebSocket (via metadata endpoint)
+Open two browser tabs to test 1v1 multiplayer.
+Actors run via Rivet Cloud — set `RIVET_ENDPOINT` and `RIVET_PUBLIC_ENDPOINT` in `.env`.
 
 ---
 
 ## Key Design Decisions
 
-- **Delta-time server physics** — Forces, drag, gravity all scale with actual elapsed time. Frame-rate independent.
-- **Tick-based respawn** — No `setTimeout`. Respawn timestamp checked each tick. Safe if actor is destroyed.
-- **Single-RPC join** — `getJoinState()` returns state + playerId in one call (was two sequential RPCs).
-- **Squared-distance collision** — Early exit with `distSq` avoids `Math.sqrt` for non-collisions.
-- **Direct Three.js interpolation** — Marble position lerp writes to Group ref, bypassing Svelte reactivity.
-- **Passive hover, active input** — PointerInput only sends network traffic while pressing. Hover is visual-only.
-- **Color dedup** — Color assignment tracks used colors via Set, not index-based (handles mid-game leaves).
-- **Shared Vec3 helpers** — `plainVec3`, `vec3Zero`, `clampSpeed` in `types.ts`, shared between server and client.
-- **Direct rivetkit imports** — `actor()`, `event()`, `setup()` imported directly from `rivetkit`.
-- **No debug log spam** — All `console.log` calls removed from hot paths (tick loop, snapshots, input).
-- **Reactive store pattern** — `GameStore` ($state class) + `useGameRoom` (composable) + Svelte context. Zero prop drilling.
-- **Deep $state reactivity** — `store.players[id].position.x = val` triggers updates automatically. No spread.
-- **Selective broadcasting** — Named events only, no automatic state broadcast for efficiency.
-- **Standalone** — Self-contained SvelteKit app. Only depends on `rivetkit`, `@rivetkit/svelte`, Threlte, and Three.js.
-- **Elemental Core marble** — 6-layer procedural design. Ring count (3 vs 1) differentiates local from remote. FakeGlowMaterial over UnrealBloomPass for performance. Marble grows with knockoffs.
-- **Warm player colors** — PLAYER_COLORS uses warm/vibrant tones (coral, amber, lime, magenta, etc.) that contrast the blue arena.
-- **Shared geometry singletons** — All marbles reuse the same SphereGeometry/TorusGeometry/IcosahedronGeometry buffers.
-- **Programmatic env map** — PMREMGenerator creates a minimal gradient cube map for PBR reflections. No external HDR files.
+- **Rectangular walled field** — Walls keep ball in play, create bank shots, zero downtime.
+- **Momentum-based ball collision** — Ball mass 0.3× player means it flies on contact. No special "kick" button — running into the ball IS kicking it.
+- **Velocity determines kick power** — Faster approach = harder shot. Creates power-vs-control tradeoff.
+- **Dash as single new mechanic** — One ability, one cooldown. Enough for power shots and defensive lunges without complexity bloat.
+- **Axis-aligned wall collision** — Four boundary checks per entity. Goal openings skip Z-wall check. Simple and fast.
+- **Phase state machine** — Server manages game flow via phases. Clean transitions, no race conditions.
+- **Fixed camera** — Both goals always visible. No camera follow avoids disorientation.
+- **Ball trail colored by last toucher** — Instant visual attribution of possession.
+- **Golden goal** — Tied matches get wider goals + next-goal-wins. Guarantees exciting finish.
+- **No knockoff/fall system** — Replaced entirely by goal scoring. Clean soccer semantics.

@@ -1,7 +1,7 @@
 import { actor, event } from "rivetkit";
 import {
   ALLOWED_ORIGINS,
-  PLAYER_COLORS,
+  MAX_PLAYERS,
   type LobbyState,
   type RoomSummary,
   type CreateRoomResult,
@@ -30,9 +30,9 @@ export const lobby = actor({
       const roomId = `room_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
       const room: RoomSummary = {
         id: roomId,
-        name,
+        name: name || "Soccer Match",
         playerCount: 0,
-        maxPlayers: PLAYER_COLORS.length,
+        maxPlayers: MAX_PLAYERS,
         status: "waiting",
         createdAt: Date.now(),
       };

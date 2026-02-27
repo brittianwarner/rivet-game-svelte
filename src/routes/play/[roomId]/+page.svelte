@@ -1,7 +1,6 @@
 <!--
-  Game Room Page — thin shell that creates the store, wires the actor,
-  provides context, and renders Scene + HUD. All game logic lives in
-  GameStore (state), useGameRoom (actor bridge), and components (visuals).
+  Game Room Page — 1v1 marble soccer.
+  Creates store, wires actor, provides context, renders Scene + HUD.
 -->
 <script lang="ts">
 	import { page } from "$app/state";
@@ -9,10 +8,7 @@
 	import { GameStore } from "$lib/game/game-store.svelte";
 	import { setGameStore, setGameRoomControls } from "$lib/game/context";
 	import { useGameRoom } from "$lib/game/use-game-room.svelte";
-
-	// ---------------------------------------------------------------------------
-	// Route params (stable for this page's lifetime)
-	// ---------------------------------------------------------------------------
+	import { TEAM_COLORS } from "$lib/game/types";
 
 	const roomId = page.params.roomId ?? "";
 	const playerName =
@@ -20,19 +16,31 @@
 			typeof window !== "undefined" ? window.location.search : "",
 		).get("name") ?? "Anonymous";
 
-	// ---------------------------------------------------------------------------
-	// Create store + wire actor → provide via context
-	// ---------------------------------------------------------------------------
-
 	const store = new GameStore();
 	setGameStore(store);
 
 	const controls = useGameRoom({ roomId, playerName, store });
 	setGameRoomControls(controls);
+
+	function formatTime(ms: number): string {
+		const totalSec = Math.max(0, Math.ceil(ms / 1000));
+		const min = Math.floor(totalSec / 60);
+		const sec = totalSec % 60;
+		return `${min}:${sec.toString().padStart(2, "0")}`;
+	}
+
+	function getScorerName(): string | null {
+		if (!store.lastGoalScorer) return null;
+		return store.players[store.lastGoalScorer]?.name ?? null;
+	}
+
+	function getWinnerName(): string | null {
+		if (!store.winnerId) return null;
+		return store.players[store.winnerId]?.name ?? null;
+	}
 </script>
 
 <div class="relative h-full w-full">
-	<!-- 3D scene (reads from store context, handles input via context) -->
 	<div class="absolute inset-0">
 		<Scene />
 	</div>
@@ -49,7 +57,7 @@
 					{store.roomId || roomId}
 				</div>
 				<div class="text-xs" style="color: var(--color-text-muted)">
-					{store.playerCount} players
+					{store.playerCount}/2 players
 				</div>
 			</div>
 
@@ -62,85 +70,144 @@
 			</button>
 		</div>
 
-		<!-- Scoreboard -->
-		{#if store.sortedPlayers.length > 0}
-			<div class="absolute right-4 top-20">
+		<!-- Score display (centered, large) -->
+		{#if store.phase !== "waiting"}
+			<div class="absolute left-1/2 top-4 -translate-x-1/2">
 				<div
-					class="rounded-lg border p-3"
-					style="background: var(--color-surface); border-color: var(--color-border); backdrop-filter: blur(8px)"
+					class="rounded-xl border px-8 py-3 text-center"
+					style="background: var(--color-surface); border-color: var(--color-border); backdrop-filter: blur(12px)"
 				>
-					<div
-						class="mb-2 flex items-center gap-3 text-xs font-semibold uppercase tracking-wider"
-						style="color: var(--color-text-muted)"
-					>
-						<span class="flex-1">Player</span>
-						<span class="w-6 text-center" title="Knockoffs">KO</span>
-						<span class="w-6 text-center" title="Falls">F</span>
-						<span class="w-8 text-right" title="Score (KO - Falls)">Pts</span>
+					<div class="flex items-center gap-6">
+						<span
+							class="text-4xl font-bold tabular-nums"
+							style="color: {TEAM_COLORS[0]}"
+						>
+							{store.scores[0]}
+						</span>
+						<span class="text-2xl font-light" style="color: var(--color-text-muted)">
+							—
+						</span>
+						<span
+							class="text-4xl font-bold tabular-nums"
+							style="color: {TEAM_COLORS[1]}"
+						>
+							{store.scores[1]}
+						</span>
 					</div>
-					{#each store.sortedPlayers as player (player.id)}
-						<div class="flex items-center gap-3 py-1">
-							<div
-								class="h-3 w-3 shrink-0 rounded-full"
-								style="background: {player.color}"
-							></div>
-							<span
-								class="flex-1 truncate text-xs {player.id === store.localPlayerId ? 'font-bold' : ''}"
-								style="color: var(--color-text)"
-							>
-								{player.name}
-							</span>
-							<span
-								class="w-6 text-center font-mono text-xs"
-								style="color: var(--color-accent)"
-							>
-								{player.knockoffs}
-							</span>
-							<span
-								class="w-6 text-center font-mono text-xs"
-								style="color: var(--color-danger)"
-							>
-								{player.falls}
-							</span>
-							<span
-								class="w-8 text-right font-mono text-xs font-semibold"
-								style="color: var(--color-text-muted)"
-							>
-								{player.score}
-							</span>
+					<!-- Timer -->
+					{#if store.phase === "playing" || store.phase === "countdown"}
+						<div
+							class="mt-1 text-sm tabular-nums"
+							style="color: {store.timeRemaining < 30000 ? 'var(--color-danger)' : 'var(--color-text-muted)'}"
+						>
+							{formatTime(store.timeRemaining)}
 						</div>
-					{/each}
+					{:else if store.phase === "goldenGoal"}
+						<div class="mt-1 text-sm font-bold animate-pulse" style="color: #FFD93D">
+							GOLDEN GOAL
+						</div>
+					{/if}
 				</div>
 			</div>
 		{/if}
 
-		<!-- Death overlay -->
-		{#if store.respawning}
+		<!-- Countdown overlay -->
+		{#if store.phase === "countdown"}
+			<div class="absolute inset-0 flex items-center justify-center">
+				<div class="text-6xl font-bold animate-pulse" style="color: var(--color-accent)">
+					GET READY
+				</div>
+			</div>
+		{/if}
+
+		<!-- Goal scored overlay -->
+		{#if store.phase === "goalScored"}
+			{@const scorerName = getScorerName()}
+			{@const teamColor = store.lastGoalTeam ? TEAM_COLORS[store.lastGoalTeam - 1] : "#fff"}
+			<div class="absolute inset-0 flex items-center justify-center">
+				<div
+					class="rounded-xl border px-12 py-8 text-center"
+					style="background: var(--color-surface); border-color: {teamColor}; backdrop-filter: blur(16px)"
+				>
+					<div class="text-5xl font-black" style="color: {teamColor}">
+						GOAL!
+					</div>
+					{#if scorerName}
+						<div class="mt-3 text-lg" style="color: var(--color-text-muted)">
+							{scorerName}
+						</div>
+					{/if}
+				</div>
+			</div>
+		{/if}
+
+		<!-- Game over overlay -->
+		{#if store.phase === "finished"}
+			{@const winnerName = getWinnerName()}
+			{@const winnerColor = store.winnerTeam ? TEAM_COLORS[store.winnerTeam - 1] : "#fff"}
+			{@const isLocalWinner = store.winnerId === store.localPlayerId}
+			<div class="absolute inset-0 flex items-center justify-center">
+				<div
+					class="rounded-xl border px-12 py-8 text-center"
+					style="background: var(--color-surface); border-color: {winnerColor}; backdrop-filter: blur(16px)"
+				>
+					<div class="text-5xl font-black" style="color: {winnerColor}">
+						{isLocalWinner ? "YOU WIN!" : "GAME OVER"}
+					</div>
+					{#if winnerName}
+						<div class="mt-3 text-lg" style="color: var(--color-text-muted)">
+							{isLocalWinner ? "" : `${winnerName} wins`}
+						</div>
+					{/if}
+					<div class="mt-4 flex items-center justify-center gap-4">
+						<span class="text-3xl font-bold" style="color: {TEAM_COLORS[0]}">
+							{store.scores[0]}
+						</span>
+						<span class="text-xl" style="color: var(--color-text-muted)">—</span>
+						<span class="text-3xl font-bold" style="color: {TEAM_COLORS[1]}">
+							{store.scores[1]}
+						</span>
+					</div>
+					<button
+						onclick={() => controls.leave()}
+						class="pointer-events-auto mt-6 rounded-lg border px-6 py-2 text-sm font-semibold transition-colors hover:border-[var(--color-accent)]"
+						style="background: var(--color-surface); border-color: var(--color-border); color: var(--color-text)"
+					>
+						Back to Lobby
+					</button>
+				</div>
+			</div>
+		{/if}
+
+		<!-- Waiting for opponent -->
+		{#if store.phase === "waiting" && controls.isConnected}
 			<div class="absolute inset-0 flex items-center justify-center">
 				<div
 					class="rounded-xl border px-8 py-6 text-center"
 					style="background: var(--color-surface); border-color: var(--color-border); backdrop-filter: blur(12px)"
 				>
-					<div class="text-2xl font-bold" style="color: var(--color-danger)">
-						{store.knockedOffByName ? `Bumped by ${store.knockedOffByName}!` : 'Fell off!'}
+					<div class="text-lg font-semibold" style="color: var(--color-accent)">
+						Waiting for opponent...
 					</div>
 					<div class="mt-2 text-sm" style="color: var(--color-text-muted)">
-						Respawning...
+						{store.playerCount}/2 players
 					</div>
 				</div>
 			</div>
 		{/if}
 
 		<!-- Controls hint -->
-		{#if store.localPlayerId}
+		{#if store.localPlayerId && store.phase !== "finished"}
 			<div class="absolute bottom-4 left-1/2 -translate-x-1/2">
 				<div
 					class="rounded-lg border px-4 py-2 text-xs"
 					style="background: var(--color-surface); border-color: var(--color-border); color: var(--color-text-muted); backdrop-filter: blur(8px)"
 				>
-					<span class="font-semibold">Click/tap</span> to move toward cursor
+					<span class="font-semibold">Click/tap</span> to move
 					<span class="mx-2">·</span>
-					Push opponents off the edge
+					<span class="font-semibold">Right-click</span> to dash
+					<span class="mx-2">·</span>
+					Push the ball into the goal
 				</div>
 			</div>
 		{/if}
@@ -153,7 +220,7 @@
 			>
 				<div class="text-center">
 					<div class="text-lg font-semibold" style="color: var(--color-accent)">
-						Connecting to arena...
+						Connecting...
 					</div>
 				</div>
 			</div>

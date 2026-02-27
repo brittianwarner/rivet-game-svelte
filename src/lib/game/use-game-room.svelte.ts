@@ -2,8 +2,7 @@
  * useGameRoom — composable that wires a gameRoom actor to a GameStore.
  *
  * Creates the actor connection, subscribes to events, and provides
- * controls (sendInput, respawn, leave) for components to use.
- * Input sending is throttled via useThrottle from Runed.
+ * controls (sendInput, dash, leave) for components to use.
  */
 
 import { goto } from "$app/navigation";
@@ -14,10 +13,12 @@ import { GameStore } from "./game-store.svelte.js";
 import type { GameRoomControls } from "./context.js";
 import {
   INPUT_SEND_INTERVAL,
+  type GamePhase,
+  type GoalScoredEvent,
   type JoinStateResult,
+  type PhysicsSnapshot,
   type PlayerInput,
   type PlayerState,
-  type PhysicsSnapshot,
   type Vec3,
 } from "./types.js";
 
@@ -30,14 +31,12 @@ interface UseGameRoomOptions {
 interface GameRoomActions {
   getJoinState(): Promise<JoinStateResult>;
   sendInput(input: PlayerInput): Promise<void>;
-  respawn(): Promise<void>;
 }
 
 export function useGameRoom(opts: UseGameRoomOptions): GameRoomControls {
   const { roomId, playerName, store } = opts;
   const { useActor } = getRivetContext<typeof registry>();
 
-  // Actions are Proxy-forwarded to the actor connection at runtime
   const room = useActor(() => ({
     name: "gameRoom" as const,
     key: [roomId],
@@ -45,7 +44,7 @@ export function useGameRoom(opts: UseGameRoomOptions): GameRoomControls {
   })) as ReturnType<typeof useActor> & GameRoomActions;
 
   // -------------------------------------------------------------------------
-  // Sync initial state on connect — single RPC
+  // Sync initial state on connect
   // -------------------------------------------------------------------------
 
   $effect(() => {
@@ -69,15 +68,18 @@ export function useGameRoom(opts: UseGameRoomOptions): GameRoomControls {
 
   room.onEvent("playerJoined", (data: { player: PlayerState }) => {
     store.addPlayer(data.player);
-    // If this is us and localPlayerId wasn't set yet (race condition guard)
     if (!store.localPlayerId && data.player.name === playerName) {
       store.initFromJoinState({
         state: {
           id: store.roomId,
           name: store.roomName,
           players: store.players,
-          maxPlayers: 8,
-          status: store.status,
+          ball: store.ball,
+          scores: store.scores,
+          phase: store.phase,
+          timeRemaining: store.timeRemaining,
+          phaseStartedAt: 0,
+          maxPlayers: 2,
           createdAt: 0,
         },
         playerId: data.player.id,
@@ -93,22 +95,25 @@ export function useGameRoom(opts: UseGameRoomOptions): GameRoomControls {
     store.applySnapshot(data);
   });
 
+  room.onEvent("goalScored", (data: GoalScoredEvent) => {
+    store.applyGoalScored(data);
+  });
+
   room.onEvent(
-    "playerFell",
+    "gameOver",
     (data: {
-      playerId: string;
-      score: number;
-      falls: number;
-      knockedOffBy: string | null;
+      winnerId: string | null;
+      winnerTeam: 1 | 2 | null;
+      scores: [number, number];
     }) => {
-      store.setPlayerFell(data);
+      store.applyGameOver(data);
     },
   );
 
   room.onEvent(
-    "playerRespawned",
-    (data: { playerId: string; position: Vec3 }) => {
-      store.setPlayerRespawned(data.playerId, data.position);
+    "phaseChanged",
+    (data: { phase: GamePhase; timeRemaining: number }) => {
+      store.applyPhaseChanged(data.phase, data.timeRemaining);
     },
   );
 
@@ -117,11 +122,17 @@ export function useGameRoom(opts: UseGameRoomOptions): GameRoomControls {
   // -------------------------------------------------------------------------
 
   let lastInput: PlayerInput | null = null;
+  let dashRequested = false;
 
   const throttledSend = useThrottle(
     () => {
       if (!lastInput || !room.isConnected) return;
-      room.sendInput(lastInput).catch(() => {});
+      const input: PlayerInput = {
+        ...lastInput,
+        dash: dashRequested,
+      };
+      dashRequested = false;
+      room.sendInput(input).catch(() => {});
     },
     () => INPUT_SEND_INTERVAL,
   );
@@ -131,13 +142,11 @@ export function useGameRoom(opts: UseGameRoomOptions): GameRoomControls {
     throttledSend();
   }
 
-  // -------------------------------------------------------------------------
-  // Actions
-  // -------------------------------------------------------------------------
-
-  function respawn(): void {
-    if (!room.isConnected) return;
-    room.respawn().catch(() => {});
+  function dash(): void {
+    dashRequested = true;
+    if (lastInput) {
+      throttledSend();
+    }
   }
 
   function leave(): void {
@@ -145,13 +154,9 @@ export function useGameRoom(opts: UseGameRoomOptions): GameRoomControls {
     goto("/");
   }
 
-  // -------------------------------------------------------------------------
-  // Return controls interface
-  // -------------------------------------------------------------------------
-
   return {
     sendInput,
-    respawn,
+    dash,
     leave,
     get isConnected() {
       return room.isConnected;

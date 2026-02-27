@@ -35,8 +35,6 @@
 		COLLISION_FLASH_DURATION,
 		COLLISION_ACCEL_THRESHOLD,
 		ESTIMATED_MAX_SPEED,
-		KNOCKOFF_SCALE_GROWTH,
-		MAX_MARBLE_SCALE,
 	} from "$lib/game/types";
 	import {
 		getCoreGeometry,
@@ -51,17 +49,12 @@
 	// -----------------------------------------------------------------------
 	interface Props {
 		color: string;
-		/** Server-authoritative target position (updated by store) */
 		target: Vec3;
-		/** Whether this is the local player */
 		isLocal?: boolean;
-		/** Player name label (reserved for future use) */
 		name?: string;
-		/** Number of knockoffs (drives marble size scaling) */
-		knockoffs?: number;
 	}
 
-	let { color, target, isLocal = false, knockoffs = 0 }: Props = $props();
+	let { color, target, isLocal = false }: Props = $props();
 
 	// -----------------------------------------------------------------------
 	// Constants (hoisted from template — no ternary re-evaluation per render)
@@ -232,10 +225,6 @@
 		groupRef.position.x += (tx - groupRef.position.x) * t;
 		groupRef.position.y += (ty - groupRef.position.y) * t;
 		groupRef.position.z += (tz - groupRef.position.z) * t;
-
-		// -- Knockoff scale (marble grows with each knockoff) ----------------
-		const marbleScale = Math.min(MAX_MARBLE_SCALE, 1 + knockoffs * KNOCKOFF_SCALE_GROWTH);
-		groupRef.scale.setScalar(marbleScale);
 
 		// -- Velocity estimation (for visual intensity scaling) ---------------
 		const invDt = 1 / Math.max(delta, 0.001);

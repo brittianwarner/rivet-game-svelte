@@ -1,15 +1,15 @@
 <!--
-  Scene — 3D canvas setup. Reads all game state from GameStore context.
-  No props. No physics engine (server-authoritative).
-
-  Camera: fixed top-down angle. Scroll to zoom. No orbit rotation
-  (left-click is reserved for game input via PointerInput).
+  Scene — 3D canvas for 1v1 marble soccer.
+  Reads all game state from GameStore context. No props.
+  Camera: fixed overhead angle showing full field.
 -->
 <script lang="ts">
 	import { Canvas, T } from "@threlte/core";
 	import { OrbitControls } from "@threlte/extras";
 	import Environment from "./Environment.svelte";
-	import Arena from "./Arena.svelte";
+	import Field from "./Field.svelte";
+	import Goal from "./Goal.svelte";
+	import Ball from "./Ball.svelte";
 	import Marble from "./Marble.svelte";
 	import PointerInput from "./PointerInput.svelte";
 	import { getGameStore } from "$lib/game/context";
@@ -18,10 +18,9 @@
 </script>
 
 <Canvas>
-	<!-- Camera: fixed angle, scroll to zoom only -->
 	<T.PerspectiveCamera
 		makeDefault
-		position={[0, 18, 18]}
+		position={[0, 22, 14]}
 		fov={50}
 		oncreate={(ref) => {
 			ref.lookAt(0, 0, 0);
@@ -31,14 +30,17 @@
 			enableDamping
 			enablePan={false}
 			enableRotate={false}
-			minDistance={10}
-			maxDistance={35}
+			minDistance={12}
+			maxDistance={40}
 			target={[0, 0, 0]}
 		/>
 	</T.PerspectiveCamera>
 
 	<Environment />
-	<Arena />
+	<Field />
+	<Goal team={1} />
+	<Goal team={2} />
+	<Ball />
 
 	<!-- Local player marble -->
 	{#if store.localPlayer}
@@ -47,20 +49,17 @@
 			target={store.localPlayer.position}
 			isLocal={true}
 			name={store.localPlayer.name}
-			knockoffs={store.localPlayer.knockoffs}
 		/>
 	{/if}
 
-	<!-- Remote player marbles -->
-	{#each store.remotePlayers as player (player.id)}
+	<!-- Opponent marble -->
+	{#if store.opponentPlayer}
 		<Marble
-			color={player.color}
-			target={player.position}
-			name={player.name}
-			knockoffs={player.knockoffs}
+			color={store.opponentPlayer.color}
+			target={store.opponentPlayer.position}
+			name={store.opponentPlayer.name}
 		/>
-	{/each}
+	{/if}
 
-	<!-- Mouse/touch input handler + target indicator -->
 	<PointerInput />
 </Canvas>

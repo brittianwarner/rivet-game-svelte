@@ -39,7 +39,7 @@
 	}
 
 	async function createRoom(): Promise<void> {
-		const name = newRoomName.trim() || "Arena";
+		const name = newRoomName.trim() || "Soccer Match";
 		isCreating = true;
 		try {
 			const result = await lobby.createRoom(name);
@@ -62,10 +62,10 @@
 		<!-- Title -->
 		<div class="text-center">
 			<h1 class="text-5xl font-bold tracking-tight" style="color: var(--color-accent)">
-				BUMP
+				MARBLE SOCCER
 			</h1>
 			<p class="mt-2" style="color: var(--color-text-muted)">
-				Multiplayer Marble Sumo
+				1v1 Marble Soccer
 			</p>
 		</div>
 
@@ -139,7 +139,7 @@
 					<div>
 						<div class="font-medium">{room.name}</div>
 						<div class="mt-0.5 text-xs" style="color: var(--color-text-muted)">
-							{room.playerCount} / {room.maxPlayers} players
+							{room.playerCount}/2 · 1v1 Soccer
 						</div>
 					</div>
 					<div

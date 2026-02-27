@@ -1,11 +1,6 @@
 <!--
-  PointerInput — tracks mouse/touch position via pointer events,
-  raycasts onto the arena ground plane (y=0), and sends the world-space
-  target to the actor via GameRoomControls context.
-
-  Performance: only sends input to the actor when the player is actively
-  pressing (isPointing). Passive hover updates the visual target indicator
-  but does NOT send network traffic.
+  PointerInput — tracks mouse/touch, raycasts onto ground plane (y=0),
+  sends target to actor. Right-click or two-finger tap triggers dash.
 -->
 <script lang="ts">
 	import { T, useThrelte } from "@threlte/core";
@@ -15,13 +10,11 @@
 	const store = getGameStore();
 	const controls = getGameRoomControls();
 
-	// Raycasting state — reused objects (no allocations per frame)
 	const raycaster = new THREE.Raycaster();
 	const pointer = new THREE.Vector2();
 	const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 	const intersectPoint = new THREE.Vector3();
 
-	// Reactive target position for the visual indicator
 	let targetX = $state(0);
 	let targetZ = $state(0);
 	let isPointing = $state(false);
@@ -48,23 +41,28 @@
 			targetZ = intersectPoint.z;
 			showTarget = true;
 
-			// Only send input when actively pressing — passive hover is visual only
 			if (isPointing) {
 				controls.sendInput({
 					tx: intersectPoint.x,
 					tz: intersectPoint.z,
 					active: true,
+					dash: false,
 				});
 			}
 		}
 	}
 
-	// Attach pointer events (unified mouse + touch + pen) to the canvas
 	$effect(() => {
 		const canvas = renderer.domElement;
 		if (!canvas) return;
 
 		const handlePointerDown = (e: PointerEvent) => {
+			if (e.button === 2) {
+				// Right-click = dash
+				e.preventDefault();
+				controls.dash();
+				return;
+			}
 			if (e.button !== 0) return;
 			isPointing = true;
 			updatePointer(e.clientX, e.clientY);
@@ -81,6 +79,7 @@
 				tx: targetX,
 				tz: targetZ,
 				active: false,
+				dash: false,
 			});
 		};
 
@@ -88,12 +87,25 @@
 			e.preventDefault();
 		};
 
+		// Two-finger tap for dash on mobile
+		let touchCount = 0;
+		const handleTouchStart = (e: TouchEvent) => {
+			touchCount = e.touches.length;
+			if (touchCount >= 2) {
+				controls.dash();
+			}
+		};
+		const handleTouchEnd = () => {
+			touchCount = 0;
+		};
+
 		canvas.addEventListener("pointerdown", handlePointerDown);
 		canvas.addEventListener("pointermove", handlePointerMove);
 		window.addEventListener("pointerup", handlePointerUp);
 		canvas.addEventListener("contextmenu", handleContextMenu);
+		canvas.addEventListener("touchstart", handleTouchStart, { passive: true });
+		canvas.addEventListener("touchend", handleTouchEnd, { passive: true });
 
-		// Prevent touch scrolling on the canvas
 		canvas.style.touchAction = "none";
 
 		return () => {
@@ -101,27 +113,26 @@
 			canvas.removeEventListener("pointermove", handlePointerMove);
 			window.removeEventListener("pointerup", handlePointerUp);
 			canvas.removeEventListener("contextmenu", handleContextMenu);
+			canvas.removeEventListener("touchstart", handleTouchStart);
+			canvas.removeEventListener("touchend", handleTouchEnd);
 		};
 	});
 </script>
 
-<!-- Visual target indicator on the ground plane -->
 {#if showTarget}
 	<T.Group position={[targetX, 0.05, targetZ]}>
-		<!-- Outer ring -->
 		<T.Mesh rotation.x={-Math.PI / 2}>
 			<T.RingGeometry args={[0.4, 0.55, 32]} />
 			<T.MeshBasicMaterial
-			color={isPointing ? "#0A9EF5" : "#ffffff"}
-			transparent
-			opacity={isPointing ? 0.6 : 0.2}
-		/>
-	</T.Mesh>
-	<!-- Center dot -->
-	<T.Mesh rotation.x={-Math.PI / 2}>
-		<T.CircleGeometry args={[0.1, 16]} />
-		<T.MeshBasicMaterial
-			color={isPointing ? "#0A9EF5" : "#ffffff"}
+				color={isPointing ? "#0A9EF5" : "#ffffff"}
+				transparent
+				opacity={isPointing ? 0.6 : 0.2}
+			/>
+		</T.Mesh>
+		<T.Mesh rotation.x={-Math.PI / 2}>
+			<T.CircleGeometry args={[0.1, 16]} />
+			<T.MeshBasicMaterial
+				color={isPointing ? "#0A9EF5" : "#ffffff"}
 				transparent
 				opacity={isPointing ? 0.8 : 0.35}
 			/>

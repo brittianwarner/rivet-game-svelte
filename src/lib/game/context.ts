@@ -1,23 +1,11 @@
-/**
- * Svelte context helpers for game state and room controls.
- *
- * GameStore is the reactive state. GameRoomControls is the interface
- * for sending input and triggering actions on the actor.
- */
-
 import { getContext, setContext } from "svelte";
 import { GameStore } from "./game-store.svelte.js";
 import { GAME_STORE_KEY, GAME_ROOM_KEY, type PlayerInput } from "./types.js";
 
-/** Controls exposed by useGameRoom for components to call */
 export interface GameRoomControls {
-  /** Send player input (mouse/touch target) to the server */
   sendInput: (input: PlayerInput) => void;
-  /** Request respawn after falling */
-  respawn: () => void;
-  /** Leave the room and navigate back to lobby */
+  dash: () => void;
   leave: () => void;
-  /** Whether the actor connection is live */
   readonly isConnected: boolean;
 }
 
