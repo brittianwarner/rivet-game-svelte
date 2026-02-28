@@ -64,22 +64,54 @@
 	});
 
 	let initialized = false;
-	let trailHistory: { x: number; y: number; z: number }[] = [];
+	let lastBallX = 0;
+	let lastBallZ = 0;
+	let ballSnapshotTime = 0;
 
-	function getLastToucherColor(): THREE.Color {
+	// Ring buffer for trail (zero allocations per frame)
+	const trailRing: { x: number; y: number; z: number }[] =
+		Array.from({ length: TRAIL_LENGTH }, () => ({ x: 0, y: -10, z: 0 }));
+	let trailHead = 0;
+	let trailFilled = 0;
+
+	// Cached trail color (only recomputed when lastTouchedBy changes)
+	const _trailColor = new THREE.Color(0xffffff);
+	const _white = new THREE.Color(0xffffff);
+	let _cachedToucherId: string | null = "__unset__";
+
+	function updateTrailColor(): THREE.Color {
 		const toucherId = store.ball.lastTouchedBy;
-		if (!toucherId) return new THREE.Color(0xffffff);
+		if (toucherId === _cachedToucherId) return toucherId ? _trailColor : _white;
+		_cachedToucherId = toucherId;
+		if (!toucherId) return _white;
 		const player = store.players[toucherId];
-		if (!player) return new THREE.Color(0xffffff);
-		return new THREE.Color(player.color);
+		if (!player) { return _white; }
+		_trailColor.set(player.color);
+		return _trailColor;
 	}
 
 	useTask((delta) => {
 		if (!groupRef) return;
 
-		const tx = store.ball.position.x;
-		const ty = store.ball.position.y;
-		const tz = store.ball.position.z;
+		// Snapshot store values at top of frame to minimize proxy reads
+		const ball = store.ball;
+		const tx = ball.position.x;
+		const ty = ball.position.y;
+		const tz = ball.position.z;
+		const vx = ball.velocity.x;
+		const vz = ball.velocity.z;
+
+		// Detect new snapshot arrival
+		if (tx !== lastBallX || tz !== lastBallZ) {
+			lastBallX = tx;
+			lastBallZ = tz;
+			ballSnapshotTime = performance.now();
+		}
+
+		// Extrapolate target using velocity
+		const extrapSec = Math.min((performance.now() - ballSnapshotTime) / 1000, 0.05);
+		const etx = tx + vx * extrapSec * 60;
+		const etz = tz + vz * extrapSec * 60;
 
 		if (!initialized) {
 			groupRef.position.set(tx, ty, tz);
@@ -88,32 +120,29 @@
 		}
 
 		const t = Math.min(1, LERP_SPEED * delta);
-		groupRef.position.x += (tx - groupRef.position.x) * t;
+		groupRef.position.x += (etx - groupRef.position.x) * t;
 		groupRef.position.y += (ty - groupRef.position.y) * t;
-		groupRef.position.z += (tz - groupRef.position.z) * t;
+		groupRef.position.z += (etz - groupRef.position.z) * t;
 
 		// Velocity-scaled glow
-		const vx = store.ball.velocity.x;
-		const vz = store.ball.velocity.z;
 		const speed = Math.sqrt(vx * vx + vz * vz);
 		ballMaterial.emissiveIntensity = 0.3 + Math.min(speed * 3, 1.5);
 
-		// Update trail
-		trailHistory.unshift({
-			x: groupRef.position.x,
-			y: groupRef.position.y,
-			z: groupRef.position.z,
-		});
-		if (trailHistory.length > TRAIL_LENGTH) {
-			trailHistory.length = TRAIL_LENGTH;
-		}
+		// Update trail ring buffer (O(1), zero allocations)
+		const entry = trailRing[trailHead];
+		entry.x = groupRef.position.x;
+		entry.y = groupRef.position.y;
+		entry.z = groupRef.position.z;
+		trailHead = (trailHead + 1) % TRAIL_LENGTH;
+		if (trailFilled < TRAIL_LENGTH) trailFilled++;
 
-		const trailColor = getLastToucherColor();
+		const trailColor = updateTrailColor();
 
 		for (let i = 0; i < TRAIL_LENGTH; i++) {
-			if (i < trailHistory.length) {
+			if (i < trailFilled) {
+				const idx = (trailHead - 1 - i + TRAIL_LENGTH) % TRAIL_LENGTH;
 				const opacity = 1.0 - i / TRAIL_LENGTH;
-				trailPosAttr.setXYZ(i, trailHistory[i].x, trailHistory[i].y, trailHistory[i].z);
+				trailPosAttr.setXYZ(i, trailRing[idx].x, trailRing[idx].y, trailRing[idx].z);
 				trailColAttr.setXYZW(i, trailColor.r, trailColor.g, trailColor.b, opacity * 0.5);
 			} else {
 				trailPosAttr.setXYZ(i, 0, -10, 0);

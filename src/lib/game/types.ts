@@ -121,6 +121,7 @@ export interface PhysicsSnapshot {
     lastTouchedBy: string | null;
   };
   tick: number;
+  timeRemaining: number;
 }
 
 export interface PlayerJoinedEvent {
@@ -248,12 +249,23 @@ export const GAME_STORE_KEY = Symbol("game-store");
 export const GAME_ROOM_KEY = Symbol("game-room");
 
 // ---------------------------------------------------------------------------
+// Lobby limits
+// ---------------------------------------------------------------------------
+
+export const MAX_ROOMS = 50;
+export const MAX_ROOM_NAME_LEN = 40;
+export const MAX_PLAYER_NAME_LEN = 24;
+
+// ---------------------------------------------------------------------------
 // CORS
 // ---------------------------------------------------------------------------
 
+const IS_DEV =
+  typeof process !== "undefined" &&
+  (process.env.NODE_ENV === "development" || !process.env.NODE_ENV);
+
 export const ALLOWED_ORIGINS = [
-  "http://localhost:5175",
-  "http://localhost:3000",
+  ...(IS_DEV ? ["http://localhost:5175", "http://localhost:3000"] : []),
   ...(typeof process !== "undefined" && process.env.ALLOWED_ORIGINS
     ? process.env.ALLOWED_ORIGINS.split(",").map((o) => o.trim())
     : []),
@@ -261,3 +273,14 @@ export const ALLOWED_ORIGINS = [
     ? [`https://${process.env.VERCEL_URL}`]
     : []),
 ];
+
+// ---------------------------------------------------------------------------
+// Sanitization helpers
+// ---------------------------------------------------------------------------
+
+export function sanitizeName(raw: unknown): string {
+  if (typeof raw !== "string") return "Player";
+  const trimmed = raw.trim().slice(0, MAX_PLAYER_NAME_LEN);
+  const cleaned = trimmed.replace(/[^\w\s\-]/g, "");
+  return cleaned || "Player";
+}

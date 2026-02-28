@@ -54,12 +54,23 @@ export function useGameRoom(opts: UseGameRoomOptions): GameRoomControls {
   });
 
   async function syncState(): Promise<void> {
-    try {
-      const result: JoinStateResult = await room.getJoinState();
-      store.initFromJoinState(result);
-    } catch (err) {
-      console.error("[useGameRoom] Failed to sync join state:", err);
+    const MAX_RETRIES = 3;
+    const BASE_DELAY = 500;
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const result: JoinStateResult = await room.getJoinState();
+        store.initFromJoinState(result);
+        store.connectionError = null;
+        return;
+      } catch (err) {
+        console.error(`[useGameRoom] Sync attempt ${attempt + 1} failed:`, err);
+        if (attempt < MAX_RETRIES) {
+          await new Promise((r) => setTimeout(r, BASE_DELAY * Math.pow(2, attempt)));
+        }
+      }
     }
+    store.connectionError = "Failed to join game. Please try again.";
   }
 
   // -------------------------------------------------------------------------
@@ -69,21 +80,7 @@ export function useGameRoom(opts: UseGameRoomOptions): GameRoomControls {
   room.onEvent("playerJoined", (data: { player: PlayerState }) => {
     store.addPlayer(data.player);
     if (!store.localPlayerId && data.player.name === playerName) {
-      store.initFromJoinState({
-        state: {
-          id: store.roomId,
-          name: store.roomName,
-          players: store.players,
-          ball: store.ball,
-          scores: store.scores,
-          phase: store.phase,
-          timeRemaining: store.timeRemaining,
-          phaseStartedAt: 0,
-          maxPlayers: 2,
-          createdAt: 0,
-        },
-        playerId: data.player.id,
-      });
+      store.localPlayerId = data.player.id;
     }
   });
 
@@ -123,10 +120,15 @@ export function useGameRoom(opts: UseGameRoomOptions): GameRoomControls {
 
   let lastInput: PlayerInput | null = null;
   let dashRequested = false;
+  let dashRequestedAt = 0;
+  const DASH_STALE_MS = 200;
 
   const throttledSend = useThrottle(
     () => {
       if (!lastInput || !room.isConnected) return;
+      if (dashRequested && Date.now() - dashRequestedAt > DASH_STALE_MS) {
+        dashRequested = false;
+      }
       const input: PlayerInput = {
         ...lastInput,
         dash: dashRequested,
@@ -144,14 +146,15 @@ export function useGameRoom(opts: UseGameRoomOptions): GameRoomControls {
 
   function dash(): void {
     dashRequested = true;
-    if (lastInput) {
-      throttledSend();
+    dashRequestedAt = Date.now();
+    if (lastInput && room.isConnected) {
+      room.sendInput({ ...lastInput, dash: true }).catch(() => {});
+      dashRequested = false;
     }
   }
 
   function leave(): void {
-    store.reset();
-    goto("/");
+    goto("/").then(() => store.reset());
   }
 
   return {
@@ -160,6 +163,9 @@ export function useGameRoom(opts: UseGameRoomOptions): GameRoomControls {
     leave,
     get isConnected() {
       return room.isConnected;
+    },
+    get connStatus() {
+      return (room as any).connStatus ?? "unknown";
     },
   };
 }

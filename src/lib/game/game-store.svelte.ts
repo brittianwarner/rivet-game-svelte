@@ -32,6 +32,9 @@ export class GameStore {
   scores = $state<[number, number]>([0, 0]);
   phase = $state<GamePhase>("waiting");
   timeRemaining = $state(180000);
+  private _timerBaseValue = 180000;
+  private _timerStartedAt = 0;
+  connectionError = $state<string | null>(null);
   roomId = $state<string>("");
   roomName = $state<string>("");
   lastGoalScorer = $state<string | null>(null);
@@ -61,6 +64,13 @@ export class GameStore {
   });
 
   playerCount = $derived(Object.keys(this.players).length);
+
+  getDisplayTime(): number {
+    if (this.phase !== "playing") return this.timeRemaining;
+    if (this._timerStartedAt === 0) return this.timeRemaining;
+    const elapsed = performance.now() - this._timerStartedAt;
+    return Math.max(0, this._timerBaseValue - elapsed);
+  }
 
   // ---------------------------------------------------------------------------
   // Mutators
@@ -109,6 +119,12 @@ export class GameStore {
     this.ball.velocity.y = snapshot.ball.velocity.y;
     this.ball.velocity.z = snapshot.ball.velocity.z;
     this.ball.lastTouchedBy = snapshot.ball.lastTouchedBy;
+
+    if (snapshot.timeRemaining !== undefined) {
+      this.timeRemaining = snapshot.timeRemaining;
+      this._timerBaseValue = snapshot.timeRemaining;
+      this._timerStartedAt = performance.now();
+    }
   }
 
   addPlayer(player: PlayerState): void {
@@ -131,6 +147,8 @@ export class GameStore {
   applyPhaseChanged(phase: GamePhase, timeRemaining: number): void {
     this.phase = phase;
     this.timeRemaining = timeRemaining;
+    this._timerBaseValue = timeRemaining;
+    this._timerStartedAt = performance.now();
   }
 
   applyGameOver(data: {

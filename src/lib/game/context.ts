@@ -7,6 +7,7 @@ export interface GameRoomControls {
   dash: () => void;
   leave: () => void;
   readonly isConnected: boolean;
+  readonly connStatus: string;
 }
 
 // ---------------------------------------------------------------------------

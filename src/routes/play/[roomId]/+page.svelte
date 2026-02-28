@@ -4,6 +4,7 @@
 -->
 <script lang="ts">
 	import { page } from "$app/state";
+	import { onMount, onDestroy } from "svelte";
 	import Scene from "$lib/components/Scene.svelte";
 	import { GameStore } from "$lib/game/game-store.svelte";
 	import { setGameStore, setGameRoomControls } from "$lib/game/context";
@@ -21,6 +22,22 @@
 
 	const controls = useGameRoom({ roomId, playerName, store });
 	setGameRoomControls(controls);
+
+	let displayTime = $state(180000);
+	let rafId = 0;
+
+	function tickTimer() {
+		displayTime = store.getDisplayTime();
+		rafId = requestAnimationFrame(tickTimer);
+	}
+
+	onMount(() => {
+		rafId = requestAnimationFrame(tickTimer);
+	});
+
+	onDestroy(() => {
+		if (rafId) cancelAnimationFrame(rafId);
+	});
 
 	function formatTime(ms: number): string {
 		const totalSec = Math.max(0, Math.ceil(ms / 1000));
@@ -94,14 +111,14 @@
 							{store.scores[1]}
 						</span>
 					</div>
-					<!-- Timer -->
-					{#if store.phase === "playing" || store.phase === "countdown"}
-						<div
-							class="mt-1 text-sm tabular-nums"
-							style="color: {store.timeRemaining < 30000 ? 'var(--color-danger)' : 'var(--color-text-muted)'}"
-						>
-							{formatTime(store.timeRemaining)}
-						</div>
+				<!-- Timer -->
+				{#if store.phase === "playing" || store.phase === "countdown"}
+					<div
+						class="mt-1 text-sm tabular-nums"
+						style="color: {displayTime < 30000 ? 'var(--color-danger)' : 'var(--color-text-muted)'}"
+					>
+						{formatTime(displayTime)}
+					</div>
 					{:else if store.phase === "goldenGoal"}
 						<div class="mt-1 text-sm font-bold animate-pulse" style="color: #FFD93D">
 							GOLDEN GOAL
@@ -212,8 +229,30 @@
 			</div>
 		{/if}
 
-		<!-- Connecting overlay -->
-		{#if !controls.isConnected}
+		<!-- Connection error -->
+		{#if store.connectionError}
+			<div
+				class="absolute inset-0 flex items-center justify-center"
+				style="background: rgba(0,0,0,0.8)"
+			>
+				<div class="text-center">
+					<div class="text-lg font-semibold" style="color: var(--color-danger)">
+						{store.connectionError}
+					</div>
+					<button
+						onclick={() => controls.leave()}
+						class="pointer-events-auto mt-4 rounded-lg border px-6 py-2 text-sm font-semibold transition-colors hover:border-[var(--color-accent)]"
+						style="background: var(--color-surface); border-color: var(--color-border); color: var(--color-text)"
+					>
+						Back to Lobby
+					</button>
+				</div>
+			</div>
+		{:else if controls.connStatus === "reconnecting"}
+			<div class="absolute top-0 left-0 right-0 z-50 px-4 py-2 text-center text-sm" style="background: rgba(180,120,0,0.85); color: #ffe0a0">
+				Reconnecting...
+			</div>
+		{:else if !controls.isConnected}
 			<div
 				class="absolute inset-0 flex items-center justify-center"
 				style="background: var(--color-bg)"

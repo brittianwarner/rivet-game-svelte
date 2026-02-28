@@ -50,11 +50,12 @@
 	interface Props {
 		color: string;
 		target: Vec3;
+		velocity?: Vec3;
 		isLocal?: boolean;
 		name?: string;
 	}
 
-	let { color, target, isLocal = false }: Props = $props();
+	let { color, target, velocity, isLocal = false }: Props = $props();
 
 	// -----------------------------------------------------------------------
 	// Constants (hoisted from template — no ternary re-evaluation per render)
@@ -181,7 +182,10 @@
 	let elapsed = 0;
 	let prevPos = { x: 0, y: 0, z: 0 };
 	let prevSpeed = 0;
-	let speedNorm = 0; // 0..1 normalized speed
+	let speedNorm = 0;
+	let lastTargetX = 0;
+	let lastTargetZ = 0;
+	let snapshotTime = 0;
 
 	// Collision flash state
 	let flashTimer = 0;
@@ -206,10 +210,27 @@
 	useTask((delta) => {
 		if (!groupRef) return;
 
-		// -- Snapshot target from $state proxy (3 reads, not 6) ---------------
+		// -- Snapshot target from $state proxy --------------------------------
 		const tx = target.x;
 		const ty = target.y;
 		const tz = target.z;
+		const hasVelocity = velocity !== undefined;
+		const svx = hasVelocity ? velocity!.x : 0;
+		const svz = hasVelocity ? velocity!.z : 0;
+
+		// Detect new snapshot arrival
+		if (tx !== lastTargetX || tz !== lastTargetZ) {
+			lastTargetX = tx;
+			lastTargetZ = tz;
+			snapshotTime = performance.now();
+		}
+
+		// Extrapolate target using velocity (half a snapshot interval ahead)
+		const extrapolationSec = hasVelocity
+			? Math.min((performance.now() - snapshotTime) / 1000, 0.05)
+			: 0;
+		const etx = tx + svx * extrapolationSec * 60;
+		const etz = tz + svz * extrapolationSec * 60;
 
 		// -- Position interpolation ------------------------------------------
 		if (!initialized) {
@@ -222,9 +243,9 @@
 		}
 
 		const t = Math.min(1, LERP_SPEED * delta);
-		groupRef.position.x += (tx - groupRef.position.x) * t;
+		groupRef.position.x += (etx - groupRef.position.x) * t;
 		groupRef.position.y += (ty - groupRef.position.y) * t;
-		groupRef.position.z += (tz - groupRef.position.z) * t;
+		groupRef.position.z += (etz - groupRef.position.z) * t;
 
 		// -- Velocity estimation (for visual intensity scaling) ---------------
 		const invDt = 1 / Math.max(delta, 0.001);

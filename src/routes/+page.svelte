@@ -7,6 +7,7 @@
 	interface LobbyActions {
 		listRooms(): Promise<RoomSummary[]>;
 		createRoom(name: string): Promise<CreateRoomResult>;
+		findOrCreateRoom(): Promise<CreateRoomResult>;
 	}
 
 	const { useActor } = getRivetContext<typeof registry>();
@@ -14,6 +15,7 @@
 
 	let rooms = $state<RoomSummary[]>([]);
 	let newRoomName = $state("");
+	let isQuickMatching = $state(false);
 	let playerName = $state(
 		`Player_${Math.random().toString(36).slice(2, 5)}`,
 	);
@@ -55,6 +57,18 @@
 	function joinRoom(roomId: string): void {
 		goto(`/play/${roomId}?name=${encodeURIComponent(playerName)}`);
 	}
+
+	async function quickMatch(): Promise<void> {
+		isQuickMatching = true;
+		try {
+			const result = await lobby.findOrCreateRoom();
+			if (result.success && result.roomId) {
+				goto(`/play/${result.roomId}?name=${encodeURIComponent(playerName)}`);
+			}
+		} finally {
+			isQuickMatching = false;
+		}
+	}
 </script>
 
 <div class="flex h-full items-center justify-center">
@@ -87,6 +101,16 @@
 				placeholder="Enter your name"
 			/>
 		</div>
+
+		<!-- Quick Play -->
+		<button
+			onclick={quickMatch}
+			disabled={isQuickMatching || !lobby.isConnected}
+			class="w-full rounded-lg px-6 py-3 text-base font-bold text-black transition-opacity hover:opacity-90 disabled:opacity-50"
+			style="background: var(--color-accent)"
+		>
+			{isQuickMatching ? "Finding match..." : "Quick Play"}
+		</button>
 
 		<!-- Create Room -->
 		<div class="space-y-2">
@@ -131,11 +155,12 @@
 			</h2>
 
 			{#each rooms as room (room.id)}
-				<button
-					onclick={() => joinRoom(room.id)}
-					class="flex w-full items-center justify-between rounded-lg border p-4 text-left transition-colors hover:border-[var(--color-accent)]"
-					style="background: var(--color-surface); border-color: var(--color-border)"
-				>
+			<button
+				onclick={() => joinRoom(room.id)}
+				disabled={room.status !== "waiting" || room.playerCount >= room.maxPlayers}
+				class="flex w-full items-center justify-between rounded-lg border p-4 text-left transition-colors hover:border-[var(--color-accent)] disabled:opacity-50 disabled:cursor-not-allowed"
+				style="background: var(--color-surface); border-color: var(--color-border)"
+			>
 					<div>
 						<div class="font-medium">{room.name}</div>
 						<div class="mt-0.5 text-xs" style="color: var(--color-text-muted)">

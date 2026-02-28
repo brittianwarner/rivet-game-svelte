@@ -47,6 +47,7 @@
 		<Marble
 			color={store.localPlayer.color}
 			target={store.localPlayer.position}
+			velocity={store.localPlayer.velocity}
 			isLocal={true}
 			name={store.localPlayer.name}
 		/>
@@ -57,6 +58,7 @@
 		<Marble
 			color={store.opponentPlayer.color}
 			target={store.opponentPlayer.position}
+			velocity={store.opponentPlayer.velocity}
 			name={store.opponentPlayer.name}
 		/>
 	{/if}

@@ -22,6 +22,20 @@
 
 	const { camera, renderer } = useThrelte();
 
+	// Hoisted geometries and materials to avoid re-creation
+	const ringGeo = new THREE.RingGeometry(0.4, 0.55, 32);
+	const circleGeo = new THREE.CircleGeometry(0.1, 16);
+	const ringMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.2, color: 0xffffff });
+	const circleMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.35, color: 0xffffff });
+
+	$effect(() => {
+		const c = isPointing ? "#0A9EF5" : "#ffffff";
+		ringMat.color.set(c);
+		ringMat.opacity = isPointing ? 0.6 : 0.2;
+		circleMat.color.set(c);
+		circleMat.opacity = isPointing ? 0.8 : 0.35;
+	});
+
 	function updatePointer(clientX: number, clientY: number): void {
 		const canvas = renderer.domElement;
 		if (!canvas) return;
@@ -121,21 +135,7 @@
 
 {#if showTarget}
 	<T.Group position={[targetX, 0.05, targetZ]}>
-		<T.Mesh rotation.x={-Math.PI / 2}>
-			<T.RingGeometry args={[0.4, 0.55, 32]} />
-			<T.MeshBasicMaterial
-				color={isPointing ? "#0A9EF5" : "#ffffff"}
-				transparent
-				opacity={isPointing ? 0.6 : 0.2}
-			/>
-		</T.Mesh>
-		<T.Mesh rotation.x={-Math.PI / 2}>
-			<T.CircleGeometry args={[0.1, 16]} />
-			<T.MeshBasicMaterial
-				color={isPointing ? "#0A9EF5" : "#ffffff"}
-				transparent
-				opacity={isPointing ? 0.8 : 0.35}
-			/>
-		</T.Mesh>
+		<T.Mesh rotation.x={-Math.PI / 2} geometry={ringGeo} material={ringMat} />
+		<T.Mesh rotation.x={-Math.PI / 2} geometry={circleGeo} material={circleMat} />
 	</T.Group>
 {/if}

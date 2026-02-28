@@ -41,6 +41,7 @@ import {
   WALL_RESTITUTION_PLAYER,
   clampSpeed,
   plainVec3,
+  sanitizeName,
   vec3Zero,
   type BallState,
   type GamePhase,
@@ -49,6 +50,7 @@ import {
   type PhysicsSnapshot,
   type PlayerInput,
   type PlayerState,
+  type Vec3,
 } from "../../game/types.js";
 
 // ---------------------------------------------------------------------------
@@ -65,6 +67,7 @@ interface ConnState {
   input: PlayerInput;
   dashCooldownUntil: number;
   dashStartedAt: number;
+  lastInputAt: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +101,36 @@ function resetForKickoff(c: any): void {
 }
 
 // ---------------------------------------------------------------------------
+// Lobby notification helper (fire-and-forget)
+// ---------------------------------------------------------------------------
+
+async function notifyLobby(
+  c: any,
+  roomId: string,
+  patch: { playerCount: number; status: "waiting" | "playing" } | null,
+): Promise<void> {
+  try {
+    const lobbyActor = c.getActor({ name: "lobby", key: ["main"] });
+    if (patch) {
+      await lobbyActor.updateRoom(roomId, patch);
+    } else {
+      await lobbyActor.removeRoom(roomId);
+    }
+  } catch (e) {
+    // Best-effort; lobby sweep will clean up if this fails
+  }
+}
+
+async function ensureLobbyRegistration(c: any): Promise<void> {
+  try {
+    const lobbyActor = c.getActor({ name: "lobby", key: ["main"] });
+    await lobbyActor.registerRoom(c.state.id, c.state.name);
+  } catch {
+    // Best-effort
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Actor definition
 // ---------------------------------------------------------------------------
 
@@ -122,10 +155,11 @@ export const gameRoom = actor({
     const playerId = `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     return {
       playerId,
-      playerName: params.playerName,
+      playerName: sanitizeName(params.playerName),
       input: { tx: 0, tz: 0, active: false, dash: false },
       dashCooldownUntil: 0,
       dashStartedAt: 0,
+      lastInputAt: 0,
     };
   },
 
@@ -160,6 +194,10 @@ export const gameRoom = actor({
   onConnect: (c: any, conn: any) => {
     const { playerId, playerName } = conn.state as ConnState;
     const existingCount = Object.keys(c.state.players).length;
+    if (existingCount >= MAX_PLAYERS) {
+      conn.close?.();
+      return;
+    }
     const team = (existingCount === 0 ? 1 : 2) as 1 | 2;
     const pos = kickoffPositions();
 
@@ -175,7 +213,13 @@ export const gameRoom = actor({
     c.state.players[playerId] = player;
     c.broadcast("playerJoined", { player });
 
-    if (Object.keys(c.state.players).length === 2 && c.state.phase === "waiting") {
+    const playerCount = Object.keys(c.state.players).length;
+
+    if (playerCount === 1) {
+      ensureLobbyRegistration(c);
+    }
+
+    if (playerCount === 2 && c.state.phase === "waiting") {
       c.state.phase = "countdown";
       c.state.phaseStartedAt = Date.now();
       c.state.timeRemaining = MATCH_TIME_LIMIT;
@@ -186,6 +230,11 @@ export const gameRoom = actor({
         timeRemaining: c.state.timeRemaining,
       });
     }
+
+    notifyLobby(c, c.state.id, {
+      playerCount,
+      status: playerCount >= 2 ? "playing" : "waiting",
+    });
   },
 
   onDisconnect: (c: any, conn: any) => {
@@ -212,6 +261,14 @@ export const gameRoom = actor({
         phase: "finished",
         timeRemaining: c.state.timeRemaining,
       });
+      notifyLobby(c, c.state.id, null);
+    } else if (remaining.length === 0) {
+      notifyLobby(c, c.state.id, null);
+    } else {
+      notifyLobby(c, c.state.id, {
+        playerCount: remaining.length,
+        status: "waiting",
+      });
     }
   },
 
@@ -221,7 +278,11 @@ export const gameRoom = actor({
 
   run: async (c: any) => {
     let lastSnapshot = 0;
+    let tickCounter = 0;
     let lastTickTime = Date.now();
+    let nextTickTarget = lastTickTime + SERVER_TICK_INTERVAL;
+    let emptyAt: number | null = null;
+    const EMPTY_TIMEOUT = 10_000;
 
     while (!c.aborted) {
       const now = Date.now();
@@ -229,19 +290,33 @@ export const gameRoom = actor({
       const dt = dtMs / SERVER_TICK_INTERVAL;
       lastTickTime = now;
 
-      phaseTick(c, now);
+      const connCount = c.conns?.size ?? 0;
+      if (connCount === 0) {
+        if (!emptyAt) emptyAt = now;
+        if (c.state.phase === "finished" || now - emptyAt > EMPTY_TIMEOUT) {
+          notifyLobby(c, c.state.id, null);
+          return;
+        }
+      } else {
+        emptyAt = null;
+      }
+
+      phaseTick(c, now, dtMs);
 
       const phase: GamePhase = c.state.phase;
-      if (phase === "waiting" || phase === "playing" || phase === "goldenGoal") {
+      const physicsActive = phase === "waiting" || phase === "playing" || phase === "goldenGoal";
+      if (physicsActive) {
         physicsTick(c, dt, now);
       }
 
-      if (now - lastSnapshot >= SNAPSHOT_BROADCAST_INTERVAL) {
-        lastSnapshot = now;
-        broadcastSnapshot(c, now);
+      if (physicsActive && now - lastSnapshot >= SNAPSHOT_BROADCAST_INTERVAL) {
+        lastSnapshot += SNAPSHOT_BROADCAST_INTERVAL;
+        broadcastSnapshot(c, tickCounter++);
       }
 
-      await new Promise((r) => setTimeout(r, SERVER_TICK_INTERVAL));
+      nextTickTarget += SERVER_TICK_INTERVAL;
+      const sleepMs = Math.max(1, nextTickTarget - Date.now());
+      await new Promise((r) => setTimeout(r, sleepMs));
     }
   },
 
@@ -252,8 +327,20 @@ export const gameRoom = actor({
   actions: {
     getJoinState: (c: any): JoinStateResult => {
       const connState = c.conn?.state as ConnState | undefined;
+      const s = c.state as GameRoomState;
       return {
-        state: c.state,
+        state: {
+          id: s.id,
+          name: s.name,
+          players: s.players,
+          ball: s.ball,
+          scores: [s.scores[0], s.scores[1]] as [number, number],
+          phase: s.phase,
+          timeRemaining: s.timeRemaining,
+          phaseStartedAt: 0,
+          maxPlayers: s.maxPlayers,
+          createdAt: 0,
+        },
         playerId: connState?.playerId ?? "",
       };
     },
@@ -261,9 +348,20 @@ export const gameRoom = actor({
     sendInput: (c: any, input: PlayerInput): void => {
       const connState = c.conn?.state as ConnState | undefined;
       if (!connState) return;
+
+      const now = Date.now();
+      if (now - connState.lastInputAt < 30) return;
+      connState.lastInputAt = now;
+
+      const tx = Number(input.tx);
+      const tz = Number(input.tz);
+      if (!Number.isFinite(tx) || !Number.isFinite(tz)) return;
+
+      const maxX = FIELD_HALF_WIDTH + GOAL_DEPTH + 5;
+      const maxZ = FIELD_HALF_LENGTH + GOAL_DEPTH + 5;
       connState.input = {
-        tx: Number(input.tx) || 0,
-        tz: Number(input.tz) || 0,
+        tx: Math.max(-maxX, Math.min(maxX, tx)),
+        tz: Math.max(-maxZ, Math.min(maxZ, tz)),
         active: Boolean(input.active),
         dash: Boolean(input.dash),
       };
@@ -275,7 +373,7 @@ export const gameRoom = actor({
 // Phase management
 // ---------------------------------------------------------------------------
 
-function phaseTick(c: any, now: number): void {
+function phaseTick(c: any, now: number, dtMs: number): void {
   const state: GameRoomState = c.state;
   const elapsed = now - state.phaseStartedAt;
 
@@ -308,6 +406,7 @@ function phaseTick(c: any, now: number): void {
             phase: "finished",
             timeRemaining: state.timeRemaining,
           });
+          notifyLobby(c, state.id, null);
         } else {
           resetForKickoff(c);
           state.phase = "playing";
@@ -321,7 +420,7 @@ function phaseTick(c: any, now: number): void {
       break;
     }
     case "playing": {
-      state.timeRemaining -= SERVER_TICK_INTERVAL;
+      state.timeRemaining -= dtMs;
       if (state.timeRemaining <= 0) {
         state.timeRemaining = 0;
         const [s1, s2] = state.scores;
@@ -346,6 +445,7 @@ function phaseTick(c: any, now: number): void {
             phase: "finished",
             timeRemaining: 0,
           });
+          notifyLobby(c, state.id, null);
         }
       }
       break;
@@ -373,10 +473,11 @@ function physicsTick(c: any, dt: number, now: number): void {
     const player = players[cs.playerId];
     if (!player) continue;
 
-    // Handle dash activation
+    // Handle dash activation — consume flag to prevent auto-retrigger
     if (cs.input.dash && now >= cs.dashCooldownUntil) {
       cs.dashStartedAt = now;
       cs.dashCooldownUntil = now + DASH_COOLDOWN;
+      cs.input.dash = false;
     }
 
     const isDashing = now - cs.dashStartedAt < DASH_DURATION;
@@ -402,7 +503,7 @@ function physicsTick(c: any, dt: number, now: number): void {
     const a = players[playerIds[i]];
     for (let j = i + 1; j < playerIds.length; j++) {
       const b = players[playerIds[j]];
-      resolveCollision(a, b, MARBLE_RADIUS, MARBLE_RADIUS, 1.0, 1.0, PUSH_FORCE, dt);
+      resolveCollision(a, b, MARBLE_RADIUS, MARBLE_RADIUS, PUSH_FORCE);
     }
   }
 
@@ -501,10 +602,7 @@ function resolveCollision(
   b: { position: Vec3; velocity: Vec3 },
   rA: number,
   rB: number,
-  _massA: number,
-  _massB: number,
   pushForce: number,
-  dt: number,
 ): void {
   const dx = b.position.x - a.position.x;
   const dz = b.position.z - a.position.z;
@@ -528,14 +626,13 @@ function resolveCollision(
   const relDot = relVx * nx + relVz * nz;
 
   if (relDot > 0) {
-    const pushDt = pushForce * dt;
-    a.velocity.x -= nx * relDot * pushDt;
-    a.velocity.z -= nz * relDot * pushDt;
-    b.velocity.x += nx * relDot * pushDt;
-    b.velocity.z += nz * relDot * pushDt;
+    a.velocity.x -= nx * relDot * pushForce;
+    a.velocity.z -= nz * relDot * pushForce;
+    b.velocity.x += nx * relDot * pushForce;
+    b.velocity.z += nz * relDot * pushForce;
   }
 
-  const basePush = pushForce * 0.3 * dt;
+  const basePush = pushForce * 0.3;
   a.velocity.x -= nx * basePush;
   a.velocity.z -= nz * basePush;
   b.velocity.x += nx * basePush;
@@ -554,56 +651,51 @@ function wallBounce(
 ): void {
   const pos = entity.position;
   const vel = entity.velocity;
-  const inGoalPocket =
-    Math.abs(pos.z) > FIELD_HALF_LENGTH && Math.abs(pos.x) < goalHW;
+  const absZ = Math.abs(pos.z);
+  const absX = Math.abs(pos.x);
+  const inGoalPocket = absZ > FIELD_HALF_LENGTH && absX < goalHW;
 
   // Side walls (X axis)
-  if (inGoalPocket) {
-    // Inside goal pocket: narrower X bounds
-    if (pos.x > goalHW - radius) {
-      pos.x = goalHW - radius;
-      vel.x *= -restitution;
-    } else if (pos.x < -(goalHW - radius)) {
-      pos.x = -(goalHW - radius);
-      vel.x *= -restitution;
-    }
-  } else {
-    if (pos.x > FIELD_HALF_WIDTH - radius) {
-      pos.x = FIELD_HALF_WIDTH - radius;
-      vel.x *= -restitution;
-    } else if (pos.x < -(FIELD_HALF_WIDTH - radius)) {
-      pos.x = -(FIELD_HALF_WIDTH - radius);
+  const xLimit = (inGoalPocket ? goalHW : FIELD_HALF_WIDTH) - radius;
+  if (pos.x > xLimit) {
+    pos.x = xLimit;
+    vel.x *= -restitution;
+  } else if (pos.x < -xLimit) {
+    pos.x = -xLimit;
+    vel.x *= -restitution;
+  }
+
+  // Goal-post inner edges: prevent lateral escape at the goal line boundary
+  if (absZ > FIELD_HALF_LENGTH - radius && absZ <= FIELD_HALF_LENGTH + GOAL_DEPTH && !inGoalPocket) {
+    if (absX < goalHW + radius && absX >= goalHW - radius) {
+      if (pos.x > 0) {
+        pos.x = goalHW - radius;
+      } else {
+        pos.x = -(goalHW - radius);
+      }
       vel.x *= -restitution;
     }
   }
 
-  // End walls (Z axis) — with goal opening
-  // Positive Z end wall
-  if (pos.z > FIELD_HALF_LENGTH - radius) {
-    if (Math.abs(pos.x) > goalHW - radius) {
-      pos.z = FIELD_HALF_LENGTH - radius;
-      vel.z *= -restitution;
-    } else {
-      const backWall = FIELD_HALF_LENGTH + GOAL_DEPTH - radius;
-      if (pos.z > backWall) {
-        pos.z = backWall;
-        vel.z *= -restitution;
-      }
-    }
+  // Back walls of goal pockets
+  const backWallZ = FIELD_HALF_LENGTH + GOAL_DEPTH - radius;
+  if (pos.z > backWallZ && absX < goalHW) {
+    pos.z = backWallZ;
+    vel.z *= -restitution;
+  }
+  if (pos.z < -backWallZ && absX < goalHW) {
+    pos.z = -backWallZ;
+    vel.z *= -restitution;
   }
 
-  // Negative Z end wall
-  if (pos.z < -(FIELD_HALF_LENGTH - radius)) {
-    if (Math.abs(pos.x) > goalHW - radius) {
-      pos.z = -(FIELD_HALF_LENGTH - radius);
-      vel.z *= -restitution;
-    } else {
-      const backWall = -(FIELD_HALF_LENGTH + GOAL_DEPTH - radius);
-      if (pos.z < backWall) {
-        pos.z = backWall;
-        vel.z *= -restitution;
-      }
-    }
+  // End walls (Z axis) — solid except goal opening
+  if (pos.z > FIELD_HALF_LENGTH - radius && absX >= goalHW - radius) {
+    pos.z = FIELD_HALF_LENGTH - radius;
+    vel.z *= -restitution;
+  }
+  if (pos.z < -(FIELD_HALF_LENGTH - radius) && absX >= goalHW - radius) {
+    pos.z = -(FIELD_HALF_LENGTH - radius);
+    vel.z *= -restitution;
   }
 }
 
@@ -647,28 +739,25 @@ function checkGoal(c: any, ball: BallState, goalHW: number, now: number): void {
 // Broadcast snapshot
 // ---------------------------------------------------------------------------
 
+const _snapshotPlayers: Record<string, { position: Vec3; velocity: Vec3 }> = {};
+
 function broadcastSnapshot(c: any, tick: number): void {
   const state: GameRoomState = c.state;
   const ids = Object.keys(state.players);
   if (ids.length === 0) return;
 
-  const snapshot: PhysicsSnapshot = {
-    players: {},
-    ball: {
-      position: { ...state.ball.position },
-      velocity: { ...state.ball.velocity },
-      lastTouchedBy: state.ball.lastTouchedBy,
-    },
-    tick,
-  };
-
   for (const id of ids) {
-    const p = state.players[id];
-    snapshot.players[id] = {
-      position: { x: p.position.x, y: p.position.y, z: p.position.z },
-      velocity: { x: p.velocity.x, y: p.velocity.y, z: p.velocity.z },
-    };
+    _snapshotPlayers[id] = state.players[id];
   }
 
-  c.broadcast("physicsSnapshot", snapshot);
+  c.broadcast("physicsSnapshot", {
+    players: _snapshotPlayers,
+    ball: state.ball,
+    tick,
+    timeRemaining: state.timeRemaining,
+  } satisfies PhysicsSnapshot);
+
+  for (const id of ids) {
+    delete _snapshotPlayers[id];
+  }
 }
