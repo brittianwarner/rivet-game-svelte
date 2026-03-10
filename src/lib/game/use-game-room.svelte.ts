@@ -154,7 +154,7 @@ export function useGameRoom(opts: UseGameRoomOptions): GameRoomControls {
   }
 
   function leave(): void {
-    goto("/").then(() => store.reset());
+    goto("/bump").then(() => store.reset());
   }
 
   return {
