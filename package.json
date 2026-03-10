@@ -28,6 +28,7 @@
     "@tailwindcss/vite": "^4.2.0",
     "@types/node": "^25.3.2",
     "@types/three": "^0.172.0",
+    "prettier-plugin-svelte": "^3.5.1",
     "svelte": "^5.51.5",
     "svelte-check": "^4.4.1",
     "tailwindcss": "^4.2.0",

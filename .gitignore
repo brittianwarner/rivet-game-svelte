@@ -5,3 +5,6 @@ node_modules/
 .turbo/
 .env
 .vercel
+.env*.local
+.DS_Store
+*.png

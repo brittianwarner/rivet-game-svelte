@@ -79,6 +79,7 @@ export interface GameRoomState {
 export interface RoomSummary {
   id: string;
   name: string;
+  game?: "bump" | "race";
   playerCount: number;
   maxPlayers: number;
   status: "waiting" | "playing";

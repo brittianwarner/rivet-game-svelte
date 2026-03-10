@@ -49,17 +49,20 @@ export const lobby = actor({
   actions: {
     listRooms: (c: any): RoomSummary[] => c.state.rooms,
 
-    createRoom: (c: any, name: string): CreateRoomResult => {
+    createRoom: (c: any, name: string, game?: string): CreateRoomResult => {
       if (c.state.rooms.length >= MAX_ROOMS) {
         return { success: false, message: "Too many active rooms" };
       }
-      const safeName = (typeof name === "string" ? name : "").trim().slice(0, MAX_ROOM_NAME_LEN) || "Soccer Match";
+      const gameType = (game === "race" ? "race" : "bump") as "bump" | "race";
+      const defaultName = gameType === "race" ? "Race Room" : "Soccer Match";
+      const safeName = (typeof name === "string" ? name : "").trim().slice(0, MAX_ROOM_NAME_LEN) || defaultName;
       const roomId = `room_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
       const room: RoomSummary = {
         id: roomId,
         name: safeName,
+        game: gameType,
         playerCount: 0,
-        maxPlayers: MAX_PLAYERS,
+        maxPlayers: gameType === "race" ? 4 : MAX_PLAYERS,
         status: "waiting",
         createdAt: Date.now(),
       };
@@ -68,16 +71,19 @@ export const lobby = actor({
       return { success: true, roomId };
     },
 
-    registerRoom: (c: any, roomId: string, name: string): void => {
+    registerRoom: (c: any, roomId: string, name: string, game?: string): void => {
       const existing = c.state.rooms.find((r: RoomSummary) => r.id === roomId);
       if (existing) return;
       if (c.state.rooms.length >= MAX_ROOMS) return;
-      const safeName = (typeof name === "string" ? name : "").trim().slice(0, MAX_ROOM_NAME_LEN) || "Soccer Match";
+      const gameType = (game === "race" ? "race" : "bump") as "bump" | "race";
+      const defaultName = gameType === "race" ? "Race Room" : "Soccer Match";
+      const safeName = (typeof name === "string" ? name : "").trim().slice(0, MAX_ROOM_NAME_LEN) || defaultName;
       const room: RoomSummary = {
         id: roomId,
         name: safeName,
+        game: gameType,
         playerCount: 0,
-        maxPlayers: MAX_PLAYERS,
+        maxPlayers: gameType === "race" ? 4 : MAX_PLAYERS,
         status: "waiting",
         createdAt: Date.now(),
       };
@@ -92,7 +98,7 @@ export const lobby = actor({
     ): void => {
       const room = c.state.rooms.find((r: RoomSummary) => r.id === roomId);
       if (!room) return;
-      if (typeof patch.playerCount === "number" && patch.playerCount >= 0 && patch.playerCount <= MAX_PLAYERS) {
+      if (typeof patch.playerCount === "number" && patch.playerCount >= 0 && patch.playerCount <= room.maxPlayers) {
         room.playerCount = patch.playerCount;
       }
       if (patch.status === "waiting" || patch.status === "playing") {
@@ -108,9 +114,13 @@ export const lobby = actor({
       c.broadcast("roomRemoved", { roomId });
     },
 
-    findOrCreateRoom: (c: any): CreateRoomResult => {
+    findOrCreateRoom: (c: any, game?: string): CreateRoomResult => {
+      const gameType = (game === "race" ? "race" : "bump") as "bump" | "race";
       const available = c.state.rooms.find(
-        (r: RoomSummary) => r.status === "waiting" && r.playerCount < r.maxPlayers,
+        (r: RoomSummary) =>
+          r.status === "waiting" &&
+          r.playerCount < r.maxPlayers &&
+          (r.game ?? "bump") === gameType,
       );
       if (available) {
         return { success: true, roomId: available.id };
@@ -118,12 +128,14 @@ export const lobby = actor({
       if (c.state.rooms.length >= MAX_ROOMS) {
         return { success: false, message: "Too many active rooms" };
       }
+      const defaultName = gameType === "race" ? "Quick Race" : "Quick Match";
       const roomId = `room_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
       const room: RoomSummary = {
         id: roomId,
-        name: "Quick Match",
+        name: defaultName,
+        game: gameType,
         playerCount: 0,
-        maxPlayers: MAX_PLAYERS,
+        maxPlayers: gameType === "race" ? 4 : MAX_PLAYERS,
         status: "waiting",
         createdAt: Date.now(),
       };
