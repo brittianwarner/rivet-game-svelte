@@ -84,14 +84,9 @@ function getControlPoints(): TrackPoint[] {
     { x: -18 * S, y: 0.5 * SY, z: 25 * S, width: w * 1.3 },           // 16
     { x: -14 * S, y: 1.0 * SY, z: 35 * S, width: w * 1.3 },           // 17
 
-    // Medium right curve back to start — banked
-    { x: -8 * S, y: 1.5 * SY, z: 42 * S, width: w, banking: 0.12 },   // 18
-    { x: 0 * S, y: 1.2 * SY, z: 45 * S, width: w, banking: 0.12 },    // 19
-
-    // Pre-finish chicane — tightens up before the line
-    { x: -3 * S, y: 0.5 * SY, z: 44 * S, width: w * 0.9 },            // 20
-    { x: 2 * S, y: 0.3 * SY, z: 43 * S, width: w * 0.9 },             // 21
-    { x: 0 * S, y: 0.1 * SY, z: 41.5 * S, width: w },                 // 22
+    // Broad sweeping final turn back to start — wide and smooth
+    { x: -4 * S, y: 1.0 * SY, z: 46 * S, width: w * 1.2, banking: 0.1 },   // 18
+    { x: 6 * S, y: 0.3 * SY, z: 44 * S, width: w * 1.1 },                   // 19
   ];
 }
 

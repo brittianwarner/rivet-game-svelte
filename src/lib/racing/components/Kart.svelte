@@ -123,10 +123,10 @@
 	const ROTATION_LERP_SPEED = 12;
 	const MODEL_SCALE = 0.008;
 	const MODEL_ROTATION_Y = -Math.PI / 2;
-	const WHEEL_SPIN_FACTOR = 40;
-	const MAX_STEER_ANGLE = 0.4;
-	const MAX_BODY_ROLL = 0.15;
-	const BODY_ROLL_LERP = 8;
+	const WHEEL_SPIN_FACTOR = 80;
+	const MAX_STEER_ANGLE = 0.3;
+	const MAX_BODY_ROLL = 0.08;
+	const BODY_ROLL_LERP = 3;
 	const SHRUNK_SCALE = 0.6;
 	const SPIN_SPEED = 12;
 
@@ -166,7 +166,10 @@
 	let snapshotTime = 0;
 	let currentRoll = 0;
 	let currentSteer = 0;
-	let spinAccum = 0;
+	let spinAccum = 0;         // "spinning" status effect accumulator
+	let wheelSpinAccum = 0;    // wheel rolling accumulator (separate!)
+	let prevVisualHeading = 0; // for computing visual turn rate → steer
+	let smoothedTurnRate = 0;  // EMA-smoothed turn rate
 	let currentScale = 1;
 	let pointLightRef: THREE.PointLight | undefined;
 
@@ -273,23 +276,25 @@
 		const body = new THREE.Mesh(bodyMesh.geometry.clone(), bodyMat);
 		inner.add(body);
 
-		// Front axle tube (caño) — static, no rotation
-		if (axleMesh) {
-			const axle = new THREE.Mesh(
-				axleMesh.geometry.clone(),
-				axleMesh.material,
-			);
-			inner.add(axle);
-		}
+		// Front axle tube (caño) — hidden; the rod pokes outside the body
+		// if (axleMesh) { inner.add(new THREE.Mesh(axleMesh.geometry.clone(), axleMesh.material)); }
 
 		// Wheel pivot helper — centers geometry at its bbox center,
-		// positions the pivot group at that center so rotation is around the axle
-		function makeWheelPivot(srcMesh: THREE.Mesh | undefined): THREE.Group | undefined {
-			if (!srcMesh) return undefined;
-			const geo = srcMesh.geometry.clone();
+		// positions the pivot group at that center so rotation is around the axle.
+		// Uses bbox center (not vertex centroid) for accurate axle alignment —
+		// vertex centroid can be biased by non-uniform vertex density (more
+		// detail on tread than hub), causing off-axis wobble during spin.
+		function bboxCenter(geo: THREE.BufferGeometry): THREE.Vector3 {
 			geo.computeBoundingBox();
 			const center = new THREE.Vector3();
 			geo.boundingBox!.getCenter(center);
+			return center;
+		}
+
+		function makeWheelPivot(srcMesh: THREE.Mesh | undefined): THREE.Group | undefined {
+			if (!srcMesh) return undefined;
+			const geo = srcMesh.geometry.clone();
+			const center = bboxCenter(geo);
 			geo.translate(-center.x, -center.y, -center.z);
 
 			const mesh = new THREE.Mesh(geo, srcMesh.material);
@@ -303,10 +308,9 @@
 			geo: THREE.BufferGeometry,
 			material: THREE.Material | THREE.Material[],
 		): THREE.Group | undefined {
-			geo.computeBoundingBox();
-			if (!geo.boundingBox) return undefined;
-			const center = new THREE.Vector3();
-			geo.boundingBox.getCenter(center);
+			const pos = geo.attributes.position;
+			if (!pos || pos.count === 0) return undefined;
+			const center = bboxCenter(geo);
 			geo.translate(-center.x, -center.y, -center.z);
 
 			const mesh = new THREE.Mesh(geo, material);
@@ -314,6 +318,48 @@
 			pivot.position.copy(center);
 			pivot.add(mesh);
 			return pivot;
+		}
+
+		// Filter out axle rod triangles from rear wheel geometry.
+		// The rod is thin geometry extending along Z toward the car center.
+		// Keep only triangles within WHEEL_Z_EXTENT of the wheel's Z extreme.
+		const WHEEL_Z_EXTENT = 120; // front wheels are ~102 wide; allow margin
+		function clipAxleRod(geo: THREE.BufferGeometry, keepNearZMin: boolean): THREE.BufferGeometry {
+			geo.computeBoundingBox();
+			const bb = geo.boundingBox!;
+			const zThreshold = keepNearZMin
+				? bb.min.z + WHEEL_Z_EXTENT  // keep triangles near Z min
+				: bb.max.z - WHEEL_Z_EXTENT; // keep triangles near Z max
+
+			const nonIndexed = geo.index ? geo.toNonIndexed() : geo.clone();
+			const pos = nonIndexed.attributes.position;
+			const norm = nonIndexed.attributes.normal;
+			const uv = nonIndexed.attributes.uv;
+			const triCount = pos.count / 3;
+
+			const keptPos: number[] = [];
+			const keptNorm: number[] = [];
+			const keptUv: number[] = [];
+
+			for (let t = 0; t < triCount; t++) {
+				const base = t * 3;
+				const cz = (pos.getZ(base) + pos.getZ(base + 1) + pos.getZ(base + 2)) / 3;
+				const keep = keepNearZMin ? cz < zThreshold : cz > zThreshold;
+				if (!keep) continue;
+
+				for (let v = 0; v < 3; v++) {
+					const i = base + v;
+					keptPos.push(pos.getX(i), pos.getY(i), pos.getZ(i));
+					if (norm) keptNorm.push(norm.getX(i), norm.getY(i), norm.getZ(i));
+					if (uv) keptUv.push(uv.getX(i), uv.getY(i));
+				}
+			}
+
+			const out = new THREE.BufferGeometry();
+			out.setAttribute("position", new THREE.Float32BufferAttribute(keptPos, 3));
+			if (keptNorm.length > 0) out.setAttribute("normal", new THREE.Float32BufferAttribute(keptNorm, 3));
+			if (keptUv.length > 0) out.setAttribute("uv", new THREE.Float32BufferAttribute(keptUv, 2));
+			return out;
 		}
 
 		// Front wheels
@@ -330,7 +376,12 @@
 			const rearBox = rearGeo.boundingBox!;
 			const zMid = (rearBox.min.z + rearBox.max.z) / 2;
 
-			const [leftGeo, rightGeo] = splitGeometryByZ(rearGeo, zMid);
+			let [leftGeo, rightGeo] = splitGeometryByZ(rearGeo, zMid);
+
+			// Clip axle rod geometry from each half — the rod extends from the
+			// wheel disc toward the car center (zMid). Keep only the wheel disc.
+			leftGeo = clipAxleRod(leftGeo, true);   // left wheel is near Z min
+			rightGeo = clipAxleRod(rightGeo, false); // right wheel is near Z max
 
 			if (leftGeo.attributes.position.count > 0) {
 				wheelRearLeftPivot = makeWheelPivotFromGeo(leftGeo, wheelRearMesh.material);
@@ -535,38 +586,58 @@
 			currentScale * squashZ,
 		);
 
-		// Body roll from steering
-		const steerSignal = driftActive ? driftDir : -angleDiff * 3;
-		const targetRoll = -Math.max(
-			-MAX_BODY_ROLL,
-			Math.min(MAX_BODY_ROLL, steerSignal * 0.15),
-		);
-		currentRoll += (targetRoll - currentRoll) * Math.min(1, BODY_ROLL_LERP * delta);
-		groupRef.rotation.z = currentRoll;
+		// ---- Steering signal from visual turn rate (Mario Kart style) ----
+		const visualHeading = groupRef.rotation.y;
+		let visualTurnDelta = visualHeading - prevVisualHeading;
+		if (visualTurnDelta > Math.PI) visualTurnDelta -= Math.PI * 2;
+		if (visualTurnDelta < -Math.PI) visualTurnDelta += Math.PI * 2;
+		prevVisualHeading = visualHeading;
 
-		// Wheel animations
-		const wheelSpinDelta = speed * WHEEL_SPIN_FACTOR * delta;
+		const rawTurnRate = delta > 0 ? visualTurnDelta / delta : 0;
+		// Smooth the turn rate with EMA to kill 20Hz snapshot jitter
+		smoothedTurnRate += (rawTurnRate - smoothedTurnRate) * Math.min(1, 3 * delta);
+		const turnRateNorm = Math.max(-1, Math.min(1, smoothedTurnRate / 2.5));
+		const steerSignal = driftActive ? driftDir : turnRateNorm;
+
+		// Body roll — DISABLED on groupRef to avoid Euler Y+Z interaction wobble.
+		// groupRef only uses rotation.y (heading). No second axis = no wobble.
+		groupRef.rotation.z = 0;
+
+		// ---- Wheel spin (rolling) ----
+		const wheelSpinDelta = -speed * WHEEL_SPIN_FACTOR * delta;
+		// Accumulate in a SEPARATE variable (spinAccum is for "spinning" status!)
+		wheelSpinAccum += wheelSpinDelta;
+		if (wheelSpinAccum > Math.PI) wheelSpinAccum -= Math.PI * 2;
+		if (wheelSpinAccum < -Math.PI) wheelSpinAccum += Math.PI * 2;
+
+		// ---- Front wheel steer angle ----
 		const targetSteerAngle = Math.max(
 			-MAX_STEER_ANGLE,
-			Math.min(MAX_STEER_ANGLE, steerSignal * 0.5),
+			Math.min(MAX_STEER_ANGLE, steerSignal * MAX_STEER_ANGLE),
 		);
 		currentSteer += (targetSteerAngle - currentSteer) * Math.min(1, 10 * delta);
 
+		// Spin + steer with bbox-centered pivots
+		// Spin axis is Z — the wheel axle in GLTF space (Z is thinnest bbox
+		// dimension at ~102 units; XY are ~137×135, the disc plane).
+		// Using bbox center (not centroid) ensures the pivot is on the true axle.
 		if (wheelFLPivot) {
-			wheelFLPivot.rotation.y = currentSteer;
-			const flMesh = wheelFLPivot.children[0];
-			if (flMesh) flMesh.rotation.z += wheelSpinDelta;
+			wheelFLPivot.rotation.set(0, currentSteer, 0);
+			const m = wheelFLPivot.children[0];
+			if (m) m.rotation.set(0, 0, wheelSpinAccum);
 		}
 		if (wheelFRPivot) {
-			wheelFRPivot.rotation.y = currentSteer;
-			const frMesh = wheelFRPivot.children[0];
-			if (frMesh) frMesh.rotation.z += wheelSpinDelta;
+			wheelFRPivot.rotation.set(0, currentSteer, 0);
+			const m = wheelFRPivot.children[0];
+			if (m) m.rotation.set(0, 0, wheelSpinAccum);
 		}
 		if (wheelRearLeftPivot) {
-			wheelRearLeftPivot.rotation.z += wheelSpinDelta;
+			const m = wheelRearLeftPivot.children[0];
+			if (m) m.rotation.set(0, 0, wheelSpinAccum);
 		}
 		if (wheelRearRightPivot) {
-			wheelRearRightPivot.rotation.z += wheelSpinDelta;
+			const m = wheelRearRightPivot.children[0];
+			if (m) m.rotation.set(0, 0, wheelSpinAccum);
 		}
 
 		// Point light color update
