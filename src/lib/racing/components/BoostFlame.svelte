@@ -11,6 +11,7 @@
 -->
 <script lang="ts">
 	import { T, useTask } from "@threlte/core";
+	import { untrack } from "svelte";
 	import * as THREE from "three";
 	import { onDestroy } from "svelte";
 
@@ -30,13 +31,15 @@
 	const sphereRadius = $derived(0.18 * intensity);
 
 	// Geometries rebuilt when intensity-derived dimensions change
-	let coneGeo: THREE.ConeGeometry | undefined;
-	let sphereGeo: THREE.SphereGeometry | undefined;
+	let coneGeo = $state<THREE.ConeGeometry | undefined>(undefined);
+	let sphereGeo = $state<THREE.SphereGeometry | undefined>(undefined);
 
 	$effect(() => {
 		// Rebuild geometries when derived dimensions change
-		coneGeo?.dispose();
-		sphereGeo?.dispose();
+		untrack(() => {
+			coneGeo?.dispose();
+			sphereGeo?.dispose();
+		});
 
 		const newCone = new THREE.ConeGeometry(coneRadius, coneHeight, 8);
 		newCone.rotateX(Math.PI / 2);

@@ -148,6 +148,8 @@ export class RaceStore {
     this.positions = [...state.positions];
     this.finishedCount = state.finishedCount;
     this.isSpectator = (result as any).isSpectator ?? false;
+    this.rematchVotes = { ...(state.rematchVotes ?? {}) };
+    this.raceStats = { ...(state.stats ?? {}) };
 
     // Rebuild karts
     const rebuilt: Record<string, KartState> = {};
@@ -324,6 +326,7 @@ export class RaceStore {
         kart.finishTime = time;
       }
     }
+    this.raceStats = { ...(data.stats ?? {}) };
   }
 
   // ---------------------------------------------------------------------------

@@ -457,13 +457,17 @@ function tryStartCountdown(c: any): void {
   const nonSpectators = getNonSpectatorCount(c);
   const readyCount = getReadyCount(c);
 
-  // Need >= 2 players AND all ready, OR auto-start after 30s check (handled in phaseTick)
-  // In dev/solo mode (>= 1 player): auto-ready handled in onConnect
+  // A solo player can start immediately once ready; larger groups still require
+  // every active racer to ready up before the countdown begins.
   if (nonSpectators >= 1 && readyCount === nonSpectators) {
     state.phase = "countdown";
     state.phaseStartedAt = Date.now();
     state.raceTimer = 0;
     resetForRaceStart(c);
+    notifyLobby(c, state.id, {
+      playerCount: nonSpectators,
+      status: "playing",
+    });
     c.broadcast("phaseChanged", {
       phase: state.phase,
       raceTimer: state.raceTimer,
@@ -501,9 +505,8 @@ export const raceRoom = actor({
     const state = c.state as RaceRoomState;
     const playerCount = Object.keys(state.players).length;
 
-    // Spectator mode: if race is already in progress and room has players
-    const isSpectator =
-      state.phase !== "waiting" && playerCount > 0 && playerCount >= RACE_MAX_PLAYERS;
+    // Once a room leaves the waiting phase, late joiners can only spectate.
+    const isSpectator = state.phase !== "waiting";
 
     if (!isSpectator && playerCount >= RACE_MAX_PLAYERS) {
       throw new Error("Room is full");
@@ -599,31 +602,9 @@ export const raceRoom = actor({
       ensureLobbyRegistration(c);
     }
 
-    // Dev/solo mode: auto-ready after 3 seconds (handled via setTimeout)
-    if (playerCount >= 1 && state.phase === "waiting") {
-      // Auto-ready for solo/dev mode after 3 seconds
-      setTimeout(() => {
-        if (conn.state && !conn.state.ready && !conn.state.spectator) {
-          const currentState = c.state as RaceRoomState;
-          if (currentState.phase === "waiting") {
-            conn.state.ready = true;
-            const total = getNonSpectatorCount(c);
-            const readyCount = getReadyCount(c);
-            c.broadcast("readyStateChanged", {
-              playerId: conn.state.playerId,
-              ready: true,
-              readyCount,
-              totalCount: total,
-            });
-            tryStartCountdown(c);
-          }
-        }
-      }, 3000);
-    }
-
     notifyLobby(c, state.id, {
       playerCount,
-      status: playerCount >= 2 ? "playing" : "waiting",
+      status: state.phase === "waiting" ? "waiting" : "playing",
     });
   },
 
@@ -834,7 +815,8 @@ export const raceRoom = actor({
         throttle: Boolean(input.throttle),
         brake: Boolean(input.brake),
         drift: Boolean(input.drift),
-        useItem: Boolean(input.useItem),
+        // Item usage is handled via the dedicated `useItem()` action to avoid double-firing.
+        useItem: false,
       };
     },
 
@@ -925,6 +907,11 @@ export const raceRoom = actor({
         c.broadcast("raceToast", {
           text: "Rematch! Waiting for players to ready up...",
           color: "#44AAFF",
+        });
+
+        notifyLobby(c, state.id, {
+          playerCount: getNonSpectatorCount(c),
+          status: "waiting",
         });
       }
     },
@@ -1289,6 +1276,11 @@ function phaseTick(c: any, now: number, dtMs: number, tickCounter: number): void
           raceTimer: 0,
         });
 
+        notifyLobby(c, state.id, {
+          playerCount: getNonSpectatorCount(c),
+          status: "playing",
+        });
+
         // Evaluate rocket starts on GO
         evaluateRocketStarts(c, tickCounter);
       }
@@ -1564,12 +1556,6 @@ function kartPhysicsTick(
     // --- Read input ---
     const input = cs.input;
 
-    // --- Handle useItem from input flag ---
-    if (input.useItem && kart.currentItem) {
-      executeItemUse(c, kart, cs.playerId);
-      input.useItem = false;
-    }
-
     // --- Acceleration / Braking ---
     const shrunkMult = kart.status === "shrunk" ? SHRUNK_SPEED_PENALTY : 1.0;
 
@@ -1783,7 +1769,22 @@ function kartPhysicsTick(
 
     // --- Elevation-Aware Physics ---
     const seg = segments[segIdx];
-    const segY = seg.center.y;
+    
+    // Interpolate Y based on lateral offset to follow track banking
+    const lateral = getLateralOffset(segments, segIdx, kart.position.x, kart.position.z);
+    const hw = Math.sqrt(
+      (seg.right.x - seg.left.x) ** 2 + (seg.right.z - seg.left.z) ** 2,
+    ) / 2;
+    
+    let targetY = seg.center.y;
+    if (hw > 0) {
+      const t = Math.max(-1, Math.min(1, lateral / hw));
+      if (t > 0) {
+        targetY = seg.center.y + t * (seg.right.y - seg.center.y);
+      } else {
+        targetY = seg.center.y + Math.abs(t) * (seg.left.y - seg.center.y);
+      }
+    }
 
     // --- Position integration ---
     const vx = Math.sin(kart.heading) * kart.speed;
@@ -1791,12 +1792,14 @@ function kartPhysicsTick(
 
     kart.position.x += vx * dt;
     kart.position.z += vz * dt;
-    kart.position.y = segY + 0.5; // Elevation-aware: use segment center Y + 0.5
+    kart.position.y = targetY + 0.5;
 
     // --- Slope force: apply acceleration based on segment's forward Y component ---
-    // seg.forward.y represents the slope; downhill (negative forward.y when going forward) = faster
-    // We add slope force along the kart's heading direction
-    const slopeForce = -seg.forward.y * 0.02 * dt; // Tuning factor for slope effect
+    const headingDirX = Math.sin(kart.heading);
+    const headingDirZ = Math.cos(kart.heading);
+    const alignment = headingDirX * seg.forward.x + headingDirZ * seg.forward.z;
+    const gravityForce = -seg.forward.y * 0.02; // Force along the track direction
+    const slopeForce = gravityForce * alignment * dt;
     kart.speed += slopeForce;
 
     // --- Update velocity for snapshot interpolation ---

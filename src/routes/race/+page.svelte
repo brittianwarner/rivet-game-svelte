@@ -118,7 +118,7 @@
         id="player-name"
         type="text"
         bind:value={playerName}
-        class="w-full rounded-lg border px-4 py-2.5 text-sm outline-none transition-colors focus:border-[var(--color-accent)]"
+        class="w-full rounded-lg border px-4 py-2.5 text-sm outline-none transition-colors focus:border-(--color-accent)"
         style="background: var(--color-surface); border-color: var(--color-border); color: var(--color-text)"
         placeholder="Enter your name"
       />
@@ -126,12 +126,12 @@
 
     <!-- Car Selection -->
     <div class="space-y-2">
-      <label
+      <div
         class="block text-sm font-medium"
         style="color: var(--color-text-muted)"
       >
         Select Car
-      </label>
+      </div>
       <div class="flex gap-3">
         {#each CAR_VARIANT_COLORS as color, i}
           <button
@@ -173,7 +173,7 @@
           id="room-name"
           type="text"
           bind:value={newRoomName}
-          class="flex-1 rounded-lg border px-4 py-2.5 text-sm outline-none transition-colors focus:border-[var(--color-accent)]"
+          class="flex-1 rounded-lg border px-4 py-2.5 text-sm outline-none transition-colors focus:border-(--color-accent)"
           style="background: var(--color-surface); border-color: var(--color-border); color: var(--color-text)"
           placeholder="Room name (optional)"
           onkeydown={(e) => e.key === "Enter" && createRoom()}
@@ -205,7 +205,7 @@
         <button
           onclick={() => joinRoom(room.id)}
           disabled={room.status === "playing" || room.playerCount >= room.maxPlayers}
-          class="flex w-full items-center justify-between rounded-lg border p-4 text-left transition-colors hover:border-[var(--color-accent)] disabled:opacity-50 disabled:cursor-not-allowed"
+          class="flex w-full items-center justify-between rounded-lg border p-4 text-left transition-colors hover:border-(--color-accent) disabled:opacity-50 disabled:cursor-not-allowed"
           style="background: var(--color-surface); border-color: var(--color-border)"
         >
           <div>

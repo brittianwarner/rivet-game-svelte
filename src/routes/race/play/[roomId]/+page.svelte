@@ -4,7 +4,7 @@
 -->
 <script lang="ts">
   import { page } from "$app/state";
-  import { onMount, onDestroy } from "svelte";
+  import { onMount } from "svelte";
   import RaceScene from "$lib/racing/components/RaceScene.svelte";
   import Minimap from "$lib/racing/components/Minimap.svelte";
   import { RaceStore } from "$lib/racing/race-store.svelte";
@@ -30,6 +30,29 @@
   let isMobile = $state(false);
   onMount(() => {
     isMobile = "ontouchstart" in window;
+
+    if (!isMobile) return;
+
+    let rafId = 0;
+    const sendMobileInput = () => {
+      if (controls.isConnected && store.localKart && !store.isSpectator) {
+        controls.sendInput({
+          steering: touchSteer,
+          throttle: touchThrottle,
+          brake: touchBrake,
+          drift: touchDrift,
+          useItem: false,
+        });
+      }
+
+      rafId = window.requestAnimationFrame(sendMobileInput);
+    };
+
+    rafId = window.requestAnimationFrame(sendMobileInput);
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+    };
   });
 
   // Position change indicator timing
@@ -224,7 +247,7 @@
 
       <button
         onclick={() => controls.leave()}
-        class="pointer-events-auto rounded-lg border px-4 py-2 text-sm transition-colors hover:border-[var(--color-danger)]"
+        class="pointer-events-auto rounded-lg border px-4 py-2 text-sm transition-colors hover:border-(--color-danger)"
         style="background: var(--color-surface); border-color: var(--color-border); color: var(--color-text-muted)"
       >
         Leave
@@ -261,7 +284,7 @@
             <div>
               <div class="text-sm" style="color: var(--color-text-muted)">Lap</div>
               <div class="text-2xl font-bold tabular-nums" style="color: var(--color-text)">
-                {Math.min(store.localLap, RACE_LAP_COUNT)}/{RACE_LAP_COUNT}
+                {Math.min(store.localLap + 1, RACE_LAP_COUNT)}/{RACE_LAP_COUNT}
               </div>
             </div>
             <div class="text-2xl font-light" style="color: var(--color-border)">|</div>
@@ -415,7 +438,7 @@
             Waiting for racers...
           </div>
           <div class="mt-2 text-sm" style="color: var(--color-text-muted)">
-            {store.playerCount}/4 racers (need at least 2)
+            {store.playerCount}/4 racers. Start solo or wait for more racers to join.
           </div>
 
           <!-- Ready state display -->
@@ -442,7 +465,7 @@
               class="pointer-events-auto mt-4 rounded-lg px-6 py-2 text-sm font-bold text-black transition-opacity hover:opacity-90"
               style="background: var(--color-accent)"
             >
-              Ready Up
+              {store.playerCount <= 1 ? "Start Solo Race" : "Ready Up"}
             </button>
           {:else if store.localPlayerId && store.readyPlayers[store.localPlayerId]}
             <div class="mt-4 text-sm font-semibold" style="color: #44FF88">
@@ -453,7 +476,7 @@
           <!-- Copy share link -->
           <button
             onclick={copyShareLink}
-            class="pointer-events-auto mt-3 rounded-lg border px-4 py-1.5 text-xs font-medium transition-colors hover:border-[var(--color-accent)]"
+            class="pointer-events-auto mt-3 rounded-lg border px-4 py-1.5 text-xs font-medium transition-colors hover:border-(--color-accent)"
             style="background: var(--color-surface); border-color: var(--color-border); color: var(--color-text-muted)"
           >
             {linkCopied ? "Link Copied!" : "Copy Room Link"}
@@ -539,7 +562,7 @@
             </button>
             <button
               onclick={() => controls.leave()}
-              class="pointer-events-auto rounded-lg border px-6 py-2 text-sm font-semibold transition-colors hover:border-[var(--color-accent)]"
+              class="pointer-events-auto rounded-lg border px-6 py-2 text-sm font-semibold transition-colors hover:border-(--color-accent)"
               style="background: var(--color-surface); border-color: var(--color-border); color: var(--color-text)"
             >
               Leave
@@ -637,7 +660,7 @@
           </div>
           <button
             onclick={() => controls.leave()}
-            class="pointer-events-auto mt-4 rounded-lg border px-6 py-2 text-sm font-semibold transition-colors hover:border-[var(--color-accent)]"
+            class="pointer-events-auto mt-4 rounded-lg border px-6 py-2 text-sm font-semibold transition-colors hover:border-(--color-accent)"
             style="background: var(--color-surface); border-color: var(--color-border); color: var(--color-text)"
           >
             Back to Lobby

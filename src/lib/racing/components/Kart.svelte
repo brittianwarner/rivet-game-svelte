@@ -153,6 +153,10 @@
 	let wheelFRPivot: THREE.Group | undefined;
 	let wheelRearLeftPivot: THREE.Group | undefined;
 	let wheelRearRightPivot: THREE.Group | undefined;
+	let wheelFLSpin: THREE.Group | undefined;
+	let wheelFRSpin: THREE.Group | undefined;
+	let wheelRearLeftSpin: THREE.Group | undefined;
+	let wheelRearRightSpin: THREE.Group | undefined;
 
 	// Slipstream wind line refs
 	let slipstreamGroupRef: THREE.Group | undefined;
@@ -186,14 +190,44 @@
 
 	// Track which variant we've built
 	let builtVariant = -1;
+	const wheelSpinAxis = new THREE.Vector3(0, 0, 1);
+	const wheelSpinQuat = new THREE.Quaternion();
 
 	// -----------------------------------------------------------------------
 	// Build the car model from the virtual graph
 	// -----------------------------------------------------------------------
 
-	function splitGeometryByZ(
+	function buildGeo(p: number[], n: number[], u: number[]): THREE.BufferGeometry {
+		const geo = new THREE.BufferGeometry();
+		geo.setAttribute("position", new THREE.Float32BufferAttribute(p, 3));
+		if (n.length > 0) geo.setAttribute("normal", new THREE.Float32BufferAttribute(n, 3));
+		if (u.length > 0) geo.setAttribute("uv", new THREE.Float32BufferAttribute(u, 2));
+		return geo;
+	}
+
+	function projectOntoAxis(x: number, y: number, z: number, axis: THREE.Vector3): number {
+		return x * axis.x + y * axis.y + z * axis.z;
+	}
+
+	function geometryProjectionRange(
+		geo: THREE.BufferGeometry,
+		axis: THREE.Vector3,
+	): { min: number; max: number } {
+		const pos = geo.attributes.position;
+		let min = Infinity;
+		let max = -Infinity;
+		for (let i = 0; i < pos.count; i++) {
+			const projection = projectOntoAxis(pos.getX(i), pos.getY(i), pos.getZ(i), axis);
+			if (projection < min) min = projection;
+			if (projection > max) max = projection;
+		}
+		return { min, max };
+	}
+
+	function splitGeometryByAxis(
 		srcGeo: THREE.BufferGeometry,
-		zMid: number,
+		axis: THREE.Vector3,
+		splitProjection: number,
 	): [THREE.BufferGeometry, THREE.BufferGeometry] {
 		const nonIndexed = srcGeo.index ? srcGeo.toNonIndexed() : srcGeo.clone();
 		const pos = nonIndexed.attributes.position;
@@ -210,14 +244,14 @@
 
 		for (let t = 0; t < triCount; t++) {
 			const base = t * 3;
-			const z0 = pos.getZ(base);
-			const z1 = pos.getZ(base + 1);
-			const z2 = pos.getZ(base + 2);
-			const cz = (z0 + z1 + z2) / 3;
+			const cx = (pos.getX(base) + pos.getX(base + 1) + pos.getX(base + 2)) / 3;
+			const cy = (pos.getY(base) + pos.getY(base + 1) + pos.getY(base + 2)) / 3;
+			const cz = (pos.getZ(base) + pos.getZ(base + 1) + pos.getZ(base + 2)) / 3;
+			const projection = projectOntoAxis(cx, cy, cz, axis);
 
-			const pArr = cz < zMid ? leftPos : rightPos;
-			const nArr = cz < zMid ? leftNorm : rightNorm;
-			const uArr = cz < zMid ? leftUv : rightUv;
+			const pArr = projection < splitProjection ? leftPos : rightPos;
+			const nArr = projection < splitProjection ? leftNorm : rightNorm;
+			const uArr = projection < splitProjection ? leftUv : rightUv;
 
 			for (let v = 0; v < 3; v++) {
 				const i = base + v;
@@ -225,14 +259,6 @@
 				if (norm) nArr.push(norm.getX(i), norm.getY(i), norm.getZ(i));
 				if (uv) uArr.push(uv.getX(i), uv.getY(i));
 			}
-		}
-
-		function buildGeo(p: number[], n: number[], u: number[]): THREE.BufferGeometry {
-			const geo = new THREE.BufferGeometry();
-			geo.setAttribute("position", new THREE.Float32BufferAttribute(p, 3));
-			if (n.length > 0) geo.setAttribute("normal", new THREE.Float32BufferAttribute(n, 3));
-			if (u.length > 0) geo.setAttribute("uv", new THREE.Float32BufferAttribute(u, 2));
-			return geo;
 		}
 
 		return [
@@ -279,6 +305,12 @@
 		// Front axle tube (caño) — hidden; the rod pokes outside the body
 		// if (axleMesh) { inner.add(new THREE.Mesh(axleMesh.geometry.clone(), axleMesh.material)); }
 
+		type WheelRig = {
+			pivot: THREE.Group;
+			spin: THREE.Group;
+			center: THREE.Vector3;
+		};
+
 		// Wheel pivot helper — centers geometry at its bbox center,
 		// positions the pivot group at that center so rotation is around the axle.
 		// Uses bbox center (not vertex centroid) for accurate axle alignment —
@@ -291,45 +323,40 @@
 			return center;
 		}
 
-		function makeWheelPivot(srcMesh: THREE.Mesh | undefined): THREE.Group | undefined {
+		function makeWheelRig(srcMesh: THREE.Mesh | undefined): WheelRig | undefined {
 			if (!srcMesh) return undefined;
 			const geo = srcMesh.geometry.clone();
-			const center = bboxCenter(geo);
-			geo.translate(-center.x, -center.y, -center.z);
-
-			const mesh = new THREE.Mesh(geo, srcMesh.material);
-			const pivot = new THREE.Group();
-			pivot.position.copy(center);
-			pivot.add(mesh);
-			return pivot;
+			return makeWheelRigFromGeo(geo, srcMesh.material);
 		}
 
-		function makeWheelPivotFromGeo(
+		function makeWheelRigFromGeo(
 			geo: THREE.BufferGeometry,
 			material: THREE.Material | THREE.Material[],
-		): THREE.Group | undefined {
+		): WheelRig | undefined {
 			const pos = geo.attributes.position;
 			if (!pos || pos.count === 0) return undefined;
 			const center = bboxCenter(geo);
 			geo.translate(-center.x, -center.y, -center.z);
 
 			const mesh = new THREE.Mesh(geo, material);
+			const spin = new THREE.Group();
+			spin.add(mesh);
 			const pivot = new THREE.Group();
 			pivot.position.copy(center);
-			pivot.add(mesh);
-			return pivot;
+			pivot.add(spin);
+			return { pivot, spin, center };
 		}
 
-		// Filter out axle rod triangles from rear wheel geometry.
-		// The rod is thin geometry extending along Z toward the car center.
-		// Keep only triangles within WHEEL_Z_EXTENT of the wheel's Z extreme.
-		const WHEEL_Z_EXTENT = 120; // front wheels are ~102 wide; allow margin
-		function clipAxleRod(geo: THREE.BufferGeometry, keepNearZMin: boolean): THREE.BufferGeometry {
-			geo.computeBoundingBox();
-			const bb = geo.boundingBox!;
-			const zThreshold = keepNearZMin
-				? bb.min.z + WHEEL_Z_EXTENT  // keep triangles near Z min
-				: bb.max.z - WHEEL_Z_EXTENT; // keep triangles near Z max
+		// Filter out axle rod triangles from rear wheel geometry by projecting onto
+		// the actual wheel axle direction from the source asset.
+		function clipAxleRod(
+			geo: THREE.BufferGeometry,
+			axis: THREE.Vector3,
+			keepNearMin: boolean,
+			wheelExtent: number,
+		): THREE.BufferGeometry {
+			const { min, max } = geometryProjectionRange(geo, axis);
+			const threshold = keepNearMin ? min + wheelExtent : max - wheelExtent;
 
 			const nonIndexed = geo.index ? geo.toNonIndexed() : geo.clone();
 			const pos = nonIndexed.attributes.position;
@@ -343,8 +370,11 @@
 
 			for (let t = 0; t < triCount; t++) {
 				const base = t * 3;
+				const cx = (pos.getX(base) + pos.getX(base + 1) + pos.getX(base + 2)) / 3;
+				const cy = (pos.getY(base) + pos.getY(base + 1) + pos.getY(base + 2)) / 3;
 				const cz = (pos.getZ(base) + pos.getZ(base + 1) + pos.getZ(base + 2)) / 3;
-				const keep = keepNearZMin ? cz < zThreshold : cz > zThreshold;
+				const projection = projectOntoAxis(cx, cy, cz, axis);
+				const keep = keepNearMin ? projection < threshold : projection > threshold;
 				if (!keep) continue;
 
 				for (let v = 0; v < 3; v++) {
@@ -363,31 +393,58 @@
 		}
 
 		// Front wheels
-		wheelFLPivot = makeWheelPivot(wheelFLMesh);
-		wheelFRPivot = makeWheelPivot(wheelFRMesh);
+		const frontLeftRig = makeWheelRig(wheelFLMesh);
+		const frontRightRig = makeWheelRig(wheelFRMesh);
+		wheelFLPivot = frontLeftRig?.pivot;
+		wheelFRPivot = frontRightRig?.pivot;
+		wheelFLSpin = frontLeftRig?.spin;
+		wheelFRSpin = frontRightRig?.spin;
 
-		// Rear wheels — split the combined mesh into L/R halves by Z midpoint
+		if (frontLeftRig && frontRightRig) {
+			wheelSpinAxis.copy(frontRightRig.center).sub(frontLeftRig.center);
+			if (wheelSpinAxis.lengthSq() > 1e-6) {
+				wheelSpinAxis.normalize();
+			} else {
+				wheelSpinAxis.set(0, 0, 1);
+			}
+		} else {
+			wheelSpinAxis.set(0, 0, 1);
+		}
+
+		// Rear wheels — split the combined mesh using the real axle direction.
 		wheelRearLeftPivot = undefined;
 		wheelRearRightPivot = undefined;
+		wheelRearLeftSpin = undefined;
+		wheelRearRightSpin = undefined;
 
 		if (wheelRearMesh) {
 			const rearGeo = wheelRearMesh.geometry;
-			rearGeo.computeBoundingBox();
-			const rearBox = rearGeo.boundingBox!;
-			const zMid = (rearBox.min.z + rearBox.max.z) / 2;
+			const rearProjectionRange = geometryProjectionRange(rearGeo, wheelSpinAxis);
+			const splitProjection = (rearProjectionRange.min + rearProjectionRange.max) / 2;
 
-			let [leftGeo, rightGeo] = splitGeometryByZ(rearGeo, zMid);
+			let [leftGeo, rightGeo] = splitGeometryByAxis(rearGeo, wheelSpinAxis, splitProjection);
+			const frontWheelRange =
+				wheelFLMesh
+					? geometryProjectionRange(wheelFLMesh.geometry, wheelSpinAxis)
+					: wheelFRMesh
+						? geometryProjectionRange(wheelFRMesh.geometry, wheelSpinAxis)
+						: { min: 0, max: 120 };
+			const wheelExtent = Math.max(120, (frontWheelRange.max - frontWheelRange.min) * 1.15);
 
-			// Clip axle rod geometry from each half — the rod extends from the
-			// wheel disc toward the car center (zMid). Keep only the wheel disc.
-			leftGeo = clipAxleRod(leftGeo, true);   // left wheel is near Z min
-			rightGeo = clipAxleRod(rightGeo, false); // right wheel is near Z max
+			// Clip axle rod geometry from each half by keeping only triangles near
+			// the outer ends of the rear axle.
+			leftGeo = clipAxleRod(leftGeo, wheelSpinAxis, true, wheelExtent);
+			rightGeo = clipAxleRod(rightGeo, wheelSpinAxis, false, wheelExtent);
 
 			if (leftGeo.attributes.position.count > 0) {
-				wheelRearLeftPivot = makeWheelPivotFromGeo(leftGeo, wheelRearMesh.material);
+				const rearLeftRig = makeWheelRigFromGeo(leftGeo, wheelRearMesh.material);
+				wheelRearLeftPivot = rearLeftRig?.pivot;
+				wheelRearLeftSpin = rearLeftRig?.spin;
 			}
 			if (rightGeo.attributes.position.count > 0) {
-				wheelRearRightPivot = makeWheelPivotFromGeo(rightGeo, wheelRearMesh.material);
+				const rearRightRig = makeWheelRigFromGeo(rightGeo, wheelRearMesh.material);
+				wheelRearRightPivot = rearRightRig?.pivot;
+				wheelRearRightSpin = rearRightRig?.spin;
 			}
 		}
 
@@ -443,6 +500,10 @@
 			wheelFRPivot = undefined;
 			wheelRearLeftPivot = undefined;
 			wheelRearRightPivot = undefined;
+			wheelFLSpin = undefined;
+			wheelFRSpin = undefined;
+			wheelRearLeftSpin = undefined;
+			wheelRearRightSpin = undefined;
 		}
 
 		const model = buildCarModel(loadedGltf.nodes, loadedGltf.materials, variant);
@@ -604,7 +665,7 @@
 		groupRef.rotation.z = 0;
 
 		// ---- Wheel spin (rolling) ----
-		const wheelSpinDelta = -speed * WHEEL_SPIN_FACTOR * delta;
+		const wheelSpinDelta = speed * WHEEL_SPIN_FACTOR * delta;
 		// Accumulate in a SEPARATE variable (spinAccum is for "spinning" status!)
 		wheelSpinAccum += wheelSpinDelta;
 		if (wheelSpinAccum > Math.PI) wheelSpinAccum -= Math.PI * 2;
@@ -617,27 +678,23 @@
 		);
 		currentSteer += (targetSteerAngle - currentSteer) * Math.min(1, 10 * delta);
 
-		// Spin + steer with bbox-centered pivots
-		// Spin axis is Z — the wheel axle in GLTF space (Z is thinnest bbox
-		// dimension at ~102 units; XY are ~137×135, the disc plane).
-		// Using bbox center (not centroid) ensures the pivot is on the true axle.
+		// Spin + steer with a real axle vector from the source mesh. The asset is
+		// slightly canted in GLTF space, so assuming a plain Z spin axis makes the
+		// wheels precess as they roll.
+		wheelSpinQuat.setFromAxisAngle(wheelSpinAxis, wheelSpinAccum);
 		if (wheelFLPivot) {
 			wheelFLPivot.rotation.set(0, currentSteer, 0);
-			const m = wheelFLPivot.children[0];
-			if (m) m.rotation.set(0, 0, wheelSpinAccum);
+			if (wheelFLSpin) wheelFLSpin.quaternion.copy(wheelSpinQuat);
 		}
 		if (wheelFRPivot) {
 			wheelFRPivot.rotation.set(0, currentSteer, 0);
-			const m = wheelFRPivot.children[0];
-			if (m) m.rotation.set(0, 0, wheelSpinAccum);
+			if (wheelFRSpin) wheelFRSpin.quaternion.copy(wheelSpinQuat);
 		}
-		if (wheelRearLeftPivot) {
-			const m = wheelRearLeftPivot.children[0];
-			if (m) m.rotation.set(0, 0, wheelSpinAccum);
+		if (wheelRearLeftSpin) {
+			wheelRearLeftSpin.quaternion.copy(wheelSpinQuat);
 		}
-		if (wheelRearRightPivot) {
-			const m = wheelRearRightPivot.children[0];
-			if (m) m.rotation.set(0, 0, wheelSpinAccum);
+		if (wheelRearRightSpin) {
+			wheelRearRightSpin.quaternion.copy(wheelSpinQuat);
 		}
 
 		// Point light color update

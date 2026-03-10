@@ -7,6 +7,7 @@
 -->
 <script lang="ts">
 	import { useTask } from "@threlte/core";
+	import { SvelteSet } from "svelte/reactivity";
 	import { getRaceRoomControls, getRaceStore } from "$lib/racing/context";
 	import type { KartInput } from "$lib/racing/types";
 
@@ -14,7 +15,7 @@
 	const store = getRaceStore();
 
 	// Track pressed keys
-	const pressed = new Set<string>();
+	const pressed = new SvelteSet<string>();
 
 	// Input buffer constants
 	const BUFFER_TICKS = 6;
@@ -106,18 +107,12 @@
 			drift = true;
 		}
 
-		// Item use from buffer
-		let useItem = false;
-		if (itemBufferTicks > 0) {
-			useItem = true;
-		}
-
 		return {
 			steering,
 			throttle,
 			brake,
 			drift,
-			useItem,
+			useItem: false,
 		};
 	}
 
@@ -142,13 +137,11 @@
 		// Decrement buffers
 		if (itemBufferTicks > 0) {
 			if (isValid) {
-				// Fire the buffered item use
+				controls.useItem();
 				itemBufferTicks = 0;
 			} else {
-				// Keep waiting
+				// Keep waiting for the first frame where the kart can accept inputs.
 				itemBufferTicks--;
-				// Don't send useItem yet if not valid
-				input.useItem = false;
 			}
 		}
 
@@ -165,10 +158,5 @@
 		wasDriftHeld = pressed.has("Shift") || pressed.has(" ");
 
 		controls.sendInput(input);
-
-		// Fire item use through the dedicated RPC when queued
-		if (input.useItem && isValid) {
-			controls.useItem();
-		}
 	});
 </script>

@@ -336,6 +336,7 @@ export interface LapCompletedEvent {
 export interface RaceFinishedEvent {
   positions: string[];
   finishTimes: Record<string, number | null>;
+  stats: Record<string, RaceStats>;
 }
 
 export interface RacePhaseChangedEvent {
