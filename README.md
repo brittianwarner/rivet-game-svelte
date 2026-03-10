@@ -1,29 +1,120 @@
-# Marble Soccer — 1v1 Multiplayer Marble Soccer
+# Rivet Kart
 
-A real-time 1v1 3D marble soccer game built with [Threlte](https://threlte.xyz) (Three.js for Svelte) and [Rivet Actors](https://rivet.gg) via **`@rivetkit/svelte`**. Players control glowing marbles on a rectangular walled field — push a lighter ball into the opponent's goal. First to 5 wins.
+Real-time multiplayer kart racing built with [SvelteKit](https://kit.svelte.dev), [Threlte](https://threlte.xyz), and [Rivet Actors](https://rivet.gg) via the local `@rivetkit/svelte` package.
 
-**Live demo:** [rivet-game.vercel.app](https://rivet-game.vercel.app)
+The current primary game in this repo is **Rivet Kart**: a server-authoritative 4-player racer with drifting, rocket starts, slipstream, boost pads, item boxes, spectators, ready-up flow, and rematches. The app home screen also still links to the older bump / marble-soccer prototype, but the racing stack is the main focus of the project.
 
-## What This Demonstrates
+## What This Repo Shows
 
-This game is a reference implementation showcasing **`@rivetkit/svelte`** — the Svelte 5 adapter for RivetKit actors. It demonstrates:
+- `setupRivetKit()` in the root SvelteKit layout
+- Type-safe actor access with `getRivetContext<typeof registry>()`
+- `useActor()` for reactive room connections
+- A shared lobby actor used by multiple games
+- A server-authoritative `raceRoom` actor ticking at about 60 Hz
+- Svelte 5 `$state` stores fed by actor events and snapshots
+- A local workspace package at `src/lib/rivetkit-svelte` that powers the app
 
-- **`setupRivetKit`** — one-call initialization in a SvelteKit layout
-- **`useActor`** — reactive, component-scoped actor connections with auto lifecycle
-- **`getRivetContext`** — type-safe context propagation through the component tree
-- **`onEvent`** — subscribing to real-time actor broadcasts
-- **Proxy-forwarded actions** — calling actor methods directly (`room.sendInput()`, `lobby.createRoom()`)
-- **Reactive `MaybeGetter` args** — `useActor(() => ({ name: "gameRoom", key: [roomId] }))` re-subscribes when `roomId` changes
-- **Server-authoritative physics** — 60 Hz delta-time tick loop with momentum-based ball collision, wall bouncing, goal detection, and match phase management
+## Rivet Kart Overview
 
-## `@rivetkit/svelte` — How It's Used
+Rivet Kart is a 4-player arcade racer on the procedurally generated **Neon Circuit** track.
 
-The package lives in [`src/lib/rivetkit-svelte/`](src/lib/rivetkit-svelte/) with full source and pre-built dist. See its [README](src/lib/rivetkit-svelte/README.md) for complete API docs.
+- **Track**: closed-loop spline track with elevation, banking, boost zones, checkpoints, scenery, and an S-curve shortcut
+- **Race format**: 3 laps, up to 4 racers, 5-minute cap
+- **Driving tech**: drift charge tiers, drift boosts, snap steering, counter-steer bonus, hitstop, off-road slowdown, and respawns
+- **Race starts**: rocket start timing with `perfect`, `good`, `ok`, and `stall` outcomes
+- **Items**: green shell, red shell, blue shell, banana, mushroom, triple mushroom, star, and lightning
+- **Catch-up systems**: rubber-banded item rolls and slipstream drafting
+- **Room flow**: create room, quick match, ready up, race, finish screen, and rematch vote
+- **Spectators**: players joining a full in-progress room can spectate instead of driving
 
-### 1. Setup in root layout
+## Architecture
+
+| Layer | Technology | Purpose |
+| --- | --- | --- |
+| Frontend | SvelteKit + Threlte | Game routes, HUD, 3D scene, and input |
+| Transport | `/api/rivet/[...all]` | Bridges browser requests to the Rivet registry |
+| Actor layer | `rivetkit` | Lobby coordination and room simulation |
+| Runtime | Rivet Cloud | Persistent actor execution and realtime connections |
+
+### Main flow
+
+1. `src/routes/+layout.svelte` calls `setupRivetKit<typeof registry>(\`${window.location.origin}/api/rivet\`)`.
+2. Lobby pages connect to the singleton `lobby` actor.
+3. Race pages connect to `raceRoom` with a reactive actor key based on `roomId`.
+4. `raceRoom` runs authoritative simulation at about 60 Hz and broadcasts snapshots at 20 Hz.
+5. `RaceStore` applies snapshots and events for HUD, scene interpolation, results, and room state.
+
+## Routes
+
+- `/` - game picker
+- `/race` - Rivet Kart lobby
+- `/race/play/[roomId]` - live kart race
+- `/bump` - legacy bump / marble-soccer flow
+- `/api/rivet/[...all]` - Rivet registry handler
+
+## Project Structure
+
+```text
+src/
+├── lib/
+│   ├── actors/
+│   │   ├── registry.ts
+│   │   ├── lobby/lobby.actor.ts
+│   │   ├── race-room/race-room.actor.ts
+│   │   └── game-room/game-room.actor.ts
+│   ├── racing/
+│   │   ├── race-store.svelte.ts
+│   │   ├── use-race-room.svelte.ts
+│   │   ├── track.ts
+│   │   ├── types.ts
+│   │   └── components/
+│   │       ├── RaceScene.svelte
+│   │       ├── RaceInput.svelte
+│   │       ├── Kart.svelte
+│   │       ├── Track.svelte
+│   │       ├── Projectile.svelte
+│   │       ├── ItemBox.svelte
+│   │       ├── BoostFlame.svelte
+│   │       ├── DriftSparks.svelte
+│   │       ├── ChaseCam.svelte
+│   │       └── Minimap.svelte
+│   └── rivetkit-svelte/
+│       ├── README.md
+│       └── AGENTS.md
+└── routes/
+    ├── +layout.svelte
+    ├── +page.svelte
+    ├── race/+page.svelte
+    ├── race/play/[roomId]/+page.svelte
+    ├── bump/+page.svelte
+    └── api/rivet/[...all]/+server.ts
+```
+
+## Actors
+
+### `lobby`
+
+Singleton room directory keyed by `["main"]`.
+
+- Lists rooms across game types
+- Creates race or bump rooms
+- Supports quick match with `findOrCreateRoom(game)`
+- Broadcasts `roomCreated`, `roomUpdated`, and `roomRemoved`
+
+### `raceRoom`
+
+Per-room kart racing actor keyed by `[roomId]`.
+
+- Owns kart state, items, hazards, item boxes, positions, rematch votes, and race stats
+- Runs the race loop, countdown, lap tracking, and finish logic
+- Handles ready states, spectator mode, and room lifecycle
+- Broadcasts snapshots, race events, toast-worthy events, and finish data
+
+## `@rivetkit/svelte` In This Repo
+
+The local package lives in [`src/lib/rivetkit-svelte`](src/lib/rivetkit-svelte). The app uses it like this:
 
 ```svelte
-<!-- src/routes/+layout.svelte -->
 <script lang="ts">
   import { setupRivetKit } from "@rivetkit/svelte";
   import type { registry } from "$lib/actors/registry";
@@ -32,235 +123,74 @@ The package lives in [`src/lib/rivetkit-svelte/`](src/lib/rivetkit-svelte/) with
 </script>
 ```
 
-`setupRivetKit` creates a RivetKit client and stores it in Svelte context. The `registry` type flows through to give `useActor` full type safety over actor names and keys.
+```ts
+const { useActor } = getRivetContext<typeof registry>();
 
-### 2. Connect to actors in pages
-
-```svelte
-<!-- src/routes/+page.svelte (Lobby) -->
-<script lang="ts">
-  import { getRivetContext } from "@rivetkit/svelte";
-  import type { registry } from "$lib/actors/registry";
-
-  const { useActor } = getRivetContext<typeof registry>();
-  const lobby = useActor({ name: "lobby", key: ["main"] });
-
-  // Actor methods are available directly via Proxy
-  const rooms = await lobby.listRooms();
-  const result = await lobby.createRoom("Soccer Match");
-
-  // Subscribe to real-time events
-  lobby.onEvent("roomCreated", () => loadRooms());
-</script>
-
-{#if lobby.isConnected}
-  <!-- UI here -->
-{:else}
-  <p>{lobby.connStatus}</p>
-{/if}
+const room = useActor(() => ({
+  name: "raceRoom" as const,
+  key: [roomId],
+  params: { playerName, carVariant },
+}));
 ```
 
-### 3. Compose into reactive composables
+See [`src/lib/rivetkit-svelte/README.md`](src/lib/rivetkit-svelte/README.md) for package API details.
 
-```typescript
-// src/lib/game/use-game-room.svelte.ts
-import { getRivetContext } from "@rivetkit/svelte";
+## Local Development
 
-export function useGameRoom(opts) {
-  const { useActor } = getRivetContext<typeof registry>();
-
-  // Reactive args — re-subscribes when roomId changes
-  const room = useActor(() => ({
-    name: "gameRoom" as const,
-    key: [opts.roomId],
-    params: { playerName: opts.playerName },
-  }));
-
-  // Wire actor events to a reactive store
-  room.onEvent("physicsSnapshot", (data) => store.applySnapshot(data));
-  room.onEvent("goalScored", (data) => store.applyGoalScored(data));
-  room.onEvent("phaseChanged", (data) => store.applyPhaseChanged(data.phase, data.timeRemaining));
-
-  // Call actor actions directly
-  const result = await room.getJoinState();
-  room.sendInput({ tx: 0, tz: 0, active: true, dash: false });
-}
-```
-
-### 4. Define actors with `rivetkit`
-
-```typescript
-// src/lib/actors/registry.ts
-import { setup } from "rivetkit";
-import { lobby } from "./lobby/index.js";
-import { gameRoom } from "./game-room/index.js";
-
-export const registry = setup({
-  use: { lobby, gameRoom },
-});
-```
-
-```typescript
-// src/lib/actors/game-room/game-room.actor.ts
-import { actor, event } from "rivetkit";
-
-export const gameRoom = actor({
-  createState: (c) => ({
-    players: {},
-    ball: { position: { x: 0, y: 0.5, z: 0 }, velocity: { x: 0, y: 0, z: 0 } },
-    scores: [0, 0],
-    phase: "waiting",
-  }),
-  createConnState: (c, params: { playerName: string }) => ({
-    playerId: generateId(),
-    playerName: params.playerName,
-    input: { tx: 0, tz: 0, active: false, dash: false },
-  }),
-  events: {
-    physicsSnapshot: event<PhysicsSnapshot>(),
-    playerJoined: event<{ player: PlayerState }>(),
-    goalScored: event<GoalScoredEvent>(),
-    gameOver: event<GameOverEvent>(),
-    phaseChanged: event<PhaseChangedEvent>(),
-  },
-  run: async (c) => {
-    // 60 Hz server-authoritative physics loop
-    while (!c.aborted) {
-      phaseTick(c, dt, now);
-      physicsTick(c, dt, now); // players, ball, walls, goals
-      if (shouldBroadcast) c.broadcast("physicsSnapshot", snapshot);
-      await new Promise((r) => setTimeout(r, 16));
-    }
-  },
-  actions: {
-    getJoinState: (c) => ({ state: c.state, playerId: c.conn.state.playerId }),
-    sendInput: (c, input) => { c.conn.state.input = input; },
-    dash: (c) => { /* dash activation with cooldown */ },
-  },
-});
-```
-
-### 5. SvelteKit API route bridges to Rivet Cloud
-
-```typescript
-// src/routes/api/rivet/[...all]/+server.ts
-import { registry } from "$lib/actors/registry";
-
-const handle = async ({ request }) => registry.handler(request);
-
-export const GET = handle;
-export const POST = handle;
-// ... all HTTP methods
-```
-
-## `@rivetkit/svelte` API at a Glance
-
-| Function | Purpose |
-|---|---|
-| `setupRivetKit(endpoint)` | Create client + set Svelte context (root layout) |
-| `getRivetContext()` | Retrieve typed RivetKit from context (any component) |
-| `useActor(opts)` | Connect to actor with auto lifecycle (`$effect`-managed) |
-| `createReactiveActor(opts)` | Manual lifecycle actor connection (for singletons/ViewModels) |
-| `hasRivetContext()` | Check if context exists (conditional actor usage) |
-
-**Key properties on the returned actor object:**
-
-| Property | Description |
-|---|---|
-| `isConnected` | `true` when WebSocket is active |
-| `connStatus` | `"idle"` \| `"connecting"` \| `"connected"` \| `"reconnecting"` \| `"disconnected"` |
-| `error` | Last connection error, or `null` |
-| `onEvent(name, handler)` | Subscribe to actor broadcasts (auto cleanup) |
-| `[anyAction]()` | Actor actions forwarded via Proxy |
-
-## Project Structure
-
-```
-rivet-game-svelte/
-├── src/
-│   ├── lib/
-│   │   ├── actors/                    # Rivet actor definitions (server-side)
-│   │   │   ├── registry.ts            # setup({ use: { lobby, gameRoom } })
-│   │   │   ├── lobby/                 # Coordinator actor — room listing
-│   │   │   └── game-room/             # Data actor — 60Hz physics, goals, phases
-│   │   ├── components/                # Threlte 3D components (visual only)
-│   │   │   ├── Scene.svelte           # Canvas + camera + reads from store
-│   │   │   ├── Field.svelte           # Rectangular pitch with walls + markings
-│   │   │   ├── Goal.svelte            # Goal posts, crossbar, net
-│   │   │   ├── Ball.svelte            # Soccer ball with trail + glow
-│   │   │   ├── Marble.svelte          # 6-layer procedural player marble
-│   │   │   ├── PointerInput.svelte    # Mouse/touch → sendInput + dash
-│   │   │   └── Environment.svelte     # Lights + env map
-│   │   ├── game/                      # Game state + logic
-│   │   │   ├── game-store.svelte.ts   # Reactive $state store
-│   │   │   ├── use-game-room.svelte.ts # Actor↔store composable
-│   │   │   ├── context.ts            # Svelte context for store + controls
-│   │   │   └── types.ts              # Shared types + physics constants
-│   │   └── rivetkit-svelte/           # @rivetkit/svelte package
-│   │       ├── src/lib/               # Source (rivetkit.svelte.ts, context.ts)
-│   │       ├── dist/                  # Pre-built output
-│   │       └── README.md              # Full API documentation
-│   └── routes/
-│       ├── +layout.svelte             # setupRivetKit initialization
-│       ├── +page.svelte               # Lobby (create/join 1v1 matches)
-│       ├── play/[roomId]/+page.svelte # Game (field + HUD + score)
-│       └── api/rivet/[...all]/        # Catch-all → registry.handler()
-├── package.json
-└── .env.example                       # Rivet Cloud credentials
-```
-
-## Game Design
-
-**1v1 marble soccer.** Two player marbles push a lighter ball into the opponent's goal. First to 5 wins, or highest score after 3 minutes. Tied at time → golden goal (wider goals, next score wins).
-
-- **Field**: 20×12 rectangular walled pitch with neon markings
-- **Ball**: Radius 0.3, mass 0.3× player — flies when hit by a moving marble
-- **Goals**: 4.0-wide openings in end walls with 2.0-deep pockets
-- **Dash**: Right-click / two-finger tap for 1.5× force burst (3s cooldown)
-- **Solo practice**: Physics runs while waiting for an opponent
-
-| Phase | Description |
-|-------|-------------|
-| `waiting` | Solo practice, waiting for opponent |
-| `countdown` | 3-second countdown, players frozen |
-| `playing` | Active match, timer counting down |
-| `goalScored` | 1.4s celebration, then kickoff reset |
-| `goldenGoal` | Tied at time — wider goals, next goal wins |
-| `finished` | Winner declared |
-
-## Running Locally
+1. Install dependencies:
 
 ```bash
-bun install
-bun run dev
+npm install
 ```
 
-Dev server starts at http://localhost:5175. Open two browser tabs to test 1v1 multiplayer.
+1. Copy env vars:
 
-Actors run via Rivet Cloud. Copy `.env.example` to `.env` and set your credentials:
+```bash
+cp .env.example .env
+```
+
+1. Set your Rivet credentials in `.env`:
 
 ```bash
 RIVET_ENDPOINT=https://your-namespace:sk_xxxx@api.rivet.dev
 RIVET_PUBLIC_ENDPOINT=https://your-namespace:pk_xxxx@api.rivet.dev
+# optional
+# ALLOWED_ORIGINS=https://your-app.vercel.app,https://custom-domain.com
 ```
 
-## Deployment (Vercel + Rivet Cloud)
+1. Start the app:
+
+```bash
+npm run dev
+```
+
+The dev server runs on `http://localhost:5175`.
+
+## Testing Multiplayer Locally
+
+- Open `http://localhost:5175/race` in 2 to 4 browser tabs
+- Create a room or use quick match
+- Ready up in each tab to start the countdown
+- Join a full in-progress room to verify spectator mode
+
+## Deployment
+
+This project is set up for **Vercel + Rivet Cloud**.
 
 1. Connect the repo to Vercel
-2. Set `RIVET_ENDPOINT` and `RIVET_PUBLIC_ENDPOINT` environment variables
-3. Vercel deploys SvelteKit via `adapter-vercel`
-4. The `/api/rivet/[...all]` serverless function handles Rivet Cloud communication
-5. Clients connect to Rivet Cloud directly for WebSocket
+2. Set `RIVET_ENDPOINT`, `RIVET_PUBLIC_ENDPOINT`, and optional `ALLOWED_ORIGINS`
+3. Deploy the SvelteKit app
+4. The `/api/rivet/[...all]` route forwards requests to `registry.handler(request)`
 
 ## Tech Stack
 
 | Layer | Technology |
-|---|---|
-| Frontend | SvelteKit + Threlte (Three.js) |
-| Actor Framework | `rivetkit` + `@rivetkit/svelte` |
-| Actor Runtime | Rivet Cloud |
-| Deployment | Vercel (SvelteKit adapter) |
+| --- | --- |
+| Frontend | SvelteKit, Svelte 5, Threlte, Three.js |
+| Actor framework | `rivetkit`, local `@rivetkit/svelte` |
+| Runtime | Rivet Cloud |
 | Styling | Tailwind CSS v4 |
+| Deployment | `@sveltejs/adapter-vercel` |
 
 ## License
 

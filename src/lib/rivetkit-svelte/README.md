@@ -1,8 +1,8 @@
-# @rivetkit/svelte
+# `@rivetkit/svelte`
 
-Official Svelte 5 adapter for [RivetKit](https://rivet.gg) actors. Connect to stateful, real-time actors with reactive `$state`-backed composables.
+Official Svelte 5 adapter for [RivetKit](https://rivet.gg) actors.
 
-Built on `@rivetkit/framework-base` — the same foundation as `@rivetkit/react`.
+This package is developed locally inside this repo and is what the `Rivet Kart` app uses to connect Svelte components and stores to Rivet actors.
 
 ## Install
 
@@ -12,15 +12,14 @@ npm install @rivetkit/svelte rivetkit
 
 ## Quick Start
 
-### 1. Set up in your layout
+### 1. Set up RivetKit in your root layout
 
 ```svelte
-<!-- +layout.svelte -->
 <script lang="ts">
-  import { setupRivetKit } from '@rivetkit/svelte';
-  import type { AppRegistry } from './registry';
+  import { setupRivetKit } from "@rivetkit/svelte";
+  import type { registry } from "$lib/actors/registry";
 
-  setupRivetKit<AppRegistry>('http://localhost:3000');
+  setupRivetKit<typeof registry>(`${window.location.origin}/api/rivet`);
 
   let { children } = $props();
 </script>
@@ -28,387 +27,189 @@ npm install @rivetkit/svelte rivetkit
 {@render children()}
 ```
 
-### 2. Use actors in components
+### 2. Read the typed context
 
-```svelte
-<!-- ChatRoom.svelte -->
-<script lang="ts">
-  import { getRivetContext } from '@rivetkit/svelte';
-  import type { AppRegistry } from './registry';
+```ts
+import { getRivetContext } from "@rivetkit/svelte";
+import type { registry } from "$lib/actors/registry";
 
-  const { useActor } = getRivetContext<AppRegistry>();
-
-  const chat = useActor({ name: 'chatRoom', key: ['room-123'] });
-
-  let messages = $state<string[]>([]);
-
-  chat.onEvent('newMessage', (msg) => {
-    messages = [...messages, msg as string];
-  });
-
-  async function send(text: string) {
-    await chat.sendMessage({ text });
-  }
-</script>
-
-{#if chat.isConnected}
-  <ul>
-    {#each messages as msg}
-      <li>{msg}</li>
-    {/each}
-  </ul>
-{:else if chat.error}
-  <p>Error: {chat.error.message}</p>
-{:else}
-  <p>Connecting...</p>
-{/if}
+const { useActor } = getRivetContext<typeof registry>();
 ```
 
-## Two APIs: `useActor` vs `createReactiveActor`
+### 3. Connect to an actor
 
-| | `useActor` | `createReactiveActor` |
-|---|---|---|
-| Best for | Components | Singletons, ViewModels |
-| Lifecycle | Automatic (`$effect`) | Manual (`mount()` / `dispose()`) |
-| Where to call | Component `<script>` only | Anywhere (modules, classes) |
-| Actor methods | Direct on the object (proxied) | Direct on the object (proxied) |
-| Reactive args | `MaybeGetter` thunks | Static only |
-| SSR safe | Automatic | Must guard with `browser` check |
+Static actor key:
 
-## API
+```ts
+const lobby = useActor({ name: "lobby", key: ["main"] });
+```
+
+Reactive actor key:
+
+```ts
+const room = useActor(() => ({
+  name: "raceRoom" as const,
+  key: [roomId],
+  params: { playerName, carVariant },
+}));
+```
+
+### 4. Use actor actions and events directly
+
+```ts
+const rooms = await lobby.listRooms();
+const result = await lobby.findOrCreateRoom("race");
+
+room.onEvent("raceSnapshot", (snapshot) => {
+  store.applySnapshot(snapshot);
+});
+
+await room.readyUp();
+await room.voteRematch();
+```
+
+## Main APIs
 
 ### `setupRivetKit<Registry>(endpoint?, opts?)`
 
-Create a RivetKit instance and set it in Svelte context in one call. The recommended way to initialize.
-
-```svelte
-<!-- +layout.svelte -->
-<script lang="ts">
-  import { setupRivetKit } from '@rivetkit/svelte';
-  const rivet = setupRivetKit<AppRegistry>('http://localhost:3000');
-</script>
-```
+Creates a RivetKit instance and stores it in Svelte context. This is the standard SvelteKit entry point.
 
 ### `setupRivetKitWithClient<Registry>(client, opts?)`
 
-Same as `setupRivetKit` but with a pre-existing client.
-
-```svelte
-<script lang="ts">
-  import { createClient } from 'rivetkit/client';
-  import { setupRivetKitWithClient } from '@rivetkit/svelte';
-  const client = createClient<AppRegistry>('http://localhost:3000');
-  const rivet = setupRivetKitWithClient<AppRegistry>(client);
-</script>
-```
+Like `setupRivetKit`, but wraps an already-created client.
 
 ### `createRivetKit<Registry>(endpoint?, opts?)`
 
-Create a RivetKit instance without setting context. Useful when you don't need the context API (e.g. module-level singletons).
-
-```typescript
-import { createRivetKit } from '@rivetkit/svelte';
-
-const rivet = createRivetKit<AppRegistry>('http://localhost:3000');
-```
+Creates a RivetKit instance without writing it to Svelte context.
 
 ### `createRivetKitWithClient<Registry>(client, opts?)`
 
-Create a RivetKit instance with a pre-existing client, without setting context.
+Creates a RivetKit instance from an existing client without using context.
 
-```typescript
-import { createClient } from 'rivetkit/client';
-import { createRivetKitWithClient } from '@rivetkit/svelte';
+### `getRivetContext()`
 
-const client = createClient<AppRegistry>('http://localhost:3000');
-const rivet = createRivetKitWithClient<AppRegistry>(client);
-```
+Reads the typed RivetKit instance from Svelte context. Throws if no provider was set up.
+
+### `hasRivetContext()`
+
+Returns whether a RivetKit context exists.
 
 ### `useActor<ActorName>(opts)`
 
-Connect to an actor and receive reactive state with auto-proxied methods. Must be called during component initialization.
+Connects to an actor with automatic lifecycle management.
 
-Accepts a **static options object** or a **`MaybeGetter` thunk** for reactive arguments:
-
-```typescript
-const { useActor } = getRivetContext<AppRegistry>();
-
-// Static options
-const counter = useActor({ name: 'counter', key: ['main'] });
-
-// Reactive thunk — re-subscribes automatically when roomId changes
-const chat = useActor(() => ({
-  name: 'chatRoom',
-  key: [roomId],
-}));
-
-// Actor methods available directly on the object
-await counter.increment({ amount: 1 });
-await chat.sendMessage({ text: 'Hello!' });
-```
-
-Returns a reactive, proxied object:
-
-| Property | Type | Description |
-|---|---|---|
-| `connection` | `ActorConn \| null` | Active WebSocket connection |
-| `handle` | `ActorHandle \| null` | Actor handle for the connection |
-| `connStatus` | `ActorConnStatus` | `"idle"` \| `"connecting"` \| `"connected"` \| `"reconnecting"` \| `"disconnected"` |
-| `error` | `Error \| null` | Last connection error |
-| `isConnected` | `boolean` | `true` when `connStatus === "connected"` |
-| `hash` | `string` | Internal hash identifying this actor instance |
-| `onEvent(name, handler)` | `function` | Subscribe to actor broadcasts |
-| `[actorMethod]()` | Proxied | All actor actions forwarded automatically |
-
-All properties are backed by Svelte 5 `$state` — they update reactively and trigger fine-grained DOM updates.
+- best for component scripts
+- accepts a static config or a getter function
+- keeps connection state reactive with Svelte 5 `$state`
+- forwards actor methods directly on the returned object
 
 ### `createReactiveActor<ActorName>(opts)`
 
-Create a reactive actor handle with **auto-proxied methods**. Safe to call outside components.
+Creates a reactive actor handle with manual lifecycle.
 
-```typescript
-const { createReactiveActor } = getRivetContext<AppRegistry>();
+- best for module-level helpers or view models
+- call `mount()` and `dispose()` yourself
+- returns the same kind of proxied action surface as `useActor`
 
-const counter = createReactiveActor({ name: 'counter', key: ['main'] });
+## Returned Actor Shape
 
-// Manual lifecycle
-const unmount = counter.mount();
+Both `useActor` and `createReactiveActor` expose reactive connection state plus proxied actor methods.
 
-// Actor methods are available directly on the object
-await counter.increment({ amount: 1 });
-const state = await counter.getState();
+Common properties:
 
-// Events
-const unsub = counter.onEvent('countChanged', (count) => {
-  console.log('Count:', count);
-});
+| Property | Purpose |
+| --- | --- |
+| `connection` | active actor connection or `null` |
+| `handle` | actor handle or `null` |
+| `connStatus` | connection lifecycle status |
+| `error` | last connection error |
+| `isConnected` | whether the actor is currently connected |
+| `hash` | internal actor identity hash |
+| `onEvent(name, handler)` | subscribe to actor broadcasts |
 
-// Cleanup
-unsub();
-counter.dispose();
+With `createReactiveActor`, you also get:
+
+| Property | Purpose |
+| --- | --- |
+| `mount()` | start the connection and return an unmount function |
+| `dispose()` | remove subscriptions and release the actor |
+
+## `MaybeGetter` Support
+
+`useActor` accepts either:
+
+- a plain actor config object
+- a getter function that returns the config
+
+That lets Svelte track dependencies and reconnect automatically when inputs change:
+
+```ts
+const room = useActor(() => ({
+  name: "raceRoom" as const,
+  key: [roomId],
+  params: { playerName, carVariant },
+}));
 ```
 
-Returns a proxied reactive object with all `useActor` properties plus:
+## Proxy-Forwarded Methods
 
-| Property | Type | Description |
-|---|---|---|
-| `mount()` | `() => () => void` | Start connection, returns unmount fn |
-| `dispose()` | `() => void` | Clean up subscriptions |
-| `onEvent(name, handler)` | `(...) => () => void` | Subscribe, returns unsubscribe fn |
-| `[actorMethod]()` | Proxied | All actor actions forwarded automatically |
+Actor actions are available directly on the returned object:
 
-### Building ViewModels
-
-Compose `createReactiveActor` into your own Svelte 5 classes:
-
-```typescript
-// chat-view-model.svelte.ts
-import { createRivetKit } from '@rivetkit/svelte';
-import type { AppRegistry } from './registry';
-
-const { createReactiveActor } = createRivetKit<AppRegistry>('http://localhost:3000');
-
-export class ChatViewModel {
-  actor = createReactiveActor<'chatRoom'>({ name: 'chatRoom', key: ['room-123'] });
-
-  draftMessage = $state('');
-
-  get isConnected() {
-    return this.actor.isConnected;
-  }
-
-  async sendAndClear() {
-    await this.actor.sendMessage({ text: this.draftMessage });
-    this.draftMessage = '';
-  }
-}
-
-export const chatViewModel = new ChatViewModel();
-```
-
-```svelte
-<!-- ChatRoom.svelte -->
-<script lang="ts">
-  import { chatViewModel } from './chat-view-model.svelte';
-
-  $effect(() => {
-    const unmount = chatViewModel.actor.mount();
-    return unmount;
-  });
-</script>
-
-{#if chatViewModel.isConnected}
-  <input bind:value={chatViewModel.draftMessage} />
-  <button onclick={() => chatViewModel.sendAndClear()}>Send</button>
-{:else}
-  <p>Connecting...</p>
-{/if}
-```
-
-### `onEvent(eventName, handler)`
-
-Subscribe to named events broadcast by the actor. Subscriptions are automatically managed — they re-bind when the connection changes and clean up on unmount.
-
-```typescript
-const actor = useActor({ name: 'chatRoom', key: ['room-123'] });
-
-actor.onEvent('messageReceived', (data) => {
-  console.log('New message:', data);
-});
-
-actor.onEvent('userJoined', (user) => {
-  console.log('User joined:', user);
+```ts
+await lobby.createRoom("Quick Race", "race");
+await room.getJoinState();
+await room.sendInput({
+  steering: 0.2,
+  throttle: true,
+  brake: false,
+  drift: false,
+  useItem: false,
 });
 ```
 
-### Context Helpers
+You do not need to reach through `connection`.
 
-| Function | Description |
-|---|---|
-| `setupRivetKit(endpoint?, opts?)` | Create + set context in one call (recommended) |
-| `setupRivetKitWithClient(client, opts?)` | Wrap existing client + set context |
-| `setRivetContext(rivet)` | Store instance in Svelte context (lower-level) |
-| `getRivetContext()` | Retrieve instance from context. **Throws** if missing. |
-| `hasRivetContext()` | Check if RivetKit context exists (for conditional usage) |
+## Example From This Repo
 
-```svelte
-<script lang="ts">
-  import { hasRivetContext, getRivetContext } from '@rivetkit/svelte';
+`Rivet Kart` uses `@rivetkit/svelte` in three main places:
 
-  // Conditionally connect to actors
-  if (hasRivetContext()) {
-    const { useActor } = getRivetContext<AppRegistry>();
-    const actor = useActor({ name: 'counter', key: ['main'] });
-  }
-</script>
-```
-
-### Utility Types
-
-The package exports ecosystem-standard types used by runed, melt-ui, and bits-ui:
-
-```typescript
-import { type MaybeGetter, type Getter, extract } from '@rivetkit/svelte';
-
-// MaybeGetter<T> = T | (() => T)
-// Getter<T> = () => T
-// extract(maybeGetter) — resolves to the underlying value
-```
-
-## Reactive Arguments (MaybeGetter)
-
-`useActor` accepts a `MaybeGetter<ActorOptions>` — either a static options object or a getter function. When using a getter, Svelte tracks reactive reads inside it. When a dependency changes, the actor automatically disconnects from the old instance and connects to the new one.
-
-```svelte
-<script lang="ts">
-  let { roomId } = $props<{ roomId: string }>();
-
-  const { useActor } = getRivetContext<AppRegistry>();
-
-  // Automatically reconnects when roomId changes
-  const chat = useActor(() => ({
-    name: 'chatRoom',
-    key: [roomId],
-  }));
-</script>
-```
-
-This pattern follows the `MaybeGetter` convention established by `runed`, `@tanstack/svelte-query`, and `convex-svelte`.
+1. `src/routes/+layout.svelte`
+   Initializes the client with `setupRivetKit()`.
+2. `src/routes/race/+page.svelte`
+   Uses `lobby` to list rooms, create rooms, and quick match.
+3. `src/lib/racing/use-race-room.svelte.ts`
+   Connects to `raceRoom`, syncs state, and wires events into `RaceStore`.
 
 ## Testing
 
-Test helpers are available via the `@rivetkit/svelte/testing` subpath:
+Test helpers live under `@rivetkit/svelte/testing`.
 
-```typescript
+```ts
 import { describe, expect } from "vitest";
 import { testWithEffect } from "@rivetkit/svelte/testing";
-import { flushSync } from "svelte";
 
-describe("my actor component", () => {
-  testWithEffect("can use $state and $effect in tests", () => {
+describe("runes", () => {
+  testWithEffect("can use $state", () => {
     let count = $state(0);
     expect(count).toBe(0);
-
-    count = 1;
-    flushSync();
-    expect(count).toBe(1);
   });
 });
 ```
 
-| Export | Description |
-|---|---|
-| `testWithEffect(name, fn)` | Run a vitest test inside `$effect.root` |
-| `effectRootScope(fn)` | Execute a function inside `$effect.root` (for `beforeEach`, etc.) |
+Exports:
+
+- `testWithEffect(name, fn)`
+- `effectRootScope(fn)`
+
+## SSR Notes
+
+- `useActor` is SSR-safe because its connection lifecycle runs inside `$effect`
+- during SSR, actor state stays in its default idle values
+- if you use `createReactiveActor` in a module or singleton, guard `mount()` behind a browser-only check
 
 ## Connection Sharing
 
-Multiple components using `useActor` with the same name + key share a single WebSocket connection. The framework-base handles ref counting — the connection stays open as long as at least one component is mounted, and cleans up when the last one unmounts.
-
-```svelte
-<!-- Both components share one connection to the same actor -->
-<ChatMessages name="chatRoom" key={['room-123']} />
-<ChatInput name="chatRoom" key={['room-123']} />
-```
-
-## SSR Safety
-
-`$effect` only runs in the browser. During SSR, `useActor` returns default values (`null`/`"idle"`). No `typeof window` checks or browser guards needed.
-
-For `createReactiveActor` used in module-level singletons, guard with SvelteKit's `browser`:
-
-```typescript
-import { browser } from '$app/environment';
-
-if (browser) {
-  const unmount = actor.mount();
-}
-```
-
-## How It Works
-
-```
-Component
-    ├─ useActor(opts | () => opts)
-    │    ├─ extract(MaybeGetter) → resolve thunk
-    │    ├─ $effect → framework-base.mount() / unmount()
-    │    ├─ framework-base state → writes to $state
-    │    ├─ onEvent() → $effect → connection.on() / cleanup
-    │    └─ Proxy → forwards unknown props to actor connection
-    │
-    └─ createReactiveActor(opts)
-         ├─ Closure-based $state (no private fields)
-         ├─ Proxy → forwards unknown props to actor connection
-         ├─ mount() / dispose() for manual lifecycle
-         └─ onEvent() → tracks listeners, re-binds on reconnect
-```
-
-### Why `createReactiveActor` uses a factory, not a class
-
-Svelte 5 compiles `$state` class fields into JavaScript private fields (`#field`). JS `Proxy` cannot intercept private field access — they are bound to the original object identity, not the proxy wrapper. This is a fundamental language-level incompatibility.
-
-`createReactiveActor` uses closure-based `$state` instead (local signal variables inside a function), which compiles to plain `$.state()` calls with no private fields. The Proxy wraps a plain object with getters, so there is no conflict.
-
-## Comparison with `@rivetkit/react`
-
-| | React | Svelte |
-|---|---|---|
-| State bridge | React store hook | Manual `.subscribe()` into `$state` |
-| Lifecycle | `useEffect(() => mount())` | `$effect(() => mount())` |
-| Event subscription | `useEvent` (nested hook) | `onEvent()` (uses `$effect`) |
-| Handler stability | `useRef` needed | Not needed (fresh closures) |
-| SSR safety | Manual guards | Automatic (`$effect` is browser-only) |
-| Context | Not included | `setupRivetKit` / `getRivetContext` / `hasRivetContext` |
-| ViewModel pattern | Not included | `createReactiveActor` with Proxy |
-| Reactive args | Not built-in | `MaybeGetter` thunks for `useActor` |
-| Flat method access | Not built-in | Proxy on both APIs |
-| Testing helpers | Not included | `@rivetkit/svelte/testing` subpath |
-| Bundle overhead | React runtime | Zero (compiles away) |
-
-## Requirements
-
-- Svelte 5+
-- RivetKit 2.1+
+Multiple `useActor` calls with the same actor name and key share the same underlying connection. The framework base layer handles caching and reference counting.
 
 ## License
 
