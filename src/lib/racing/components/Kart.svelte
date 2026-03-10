@@ -122,7 +122,7 @@
 	const LERP_SPEED = 15;
 	const ROTATION_LERP_SPEED = 12;
 	const MODEL_SCALE = 0.008;
-	const MODEL_ROTATION_Y = Math.PI / 2;
+	const MODEL_ROTATION_Y = -Math.PI / 2;
 	const WHEEL_SPIN_FACTOR = 12;
 	const MAX_STEER_ANGLE = 0.4;
 	const MAX_BODY_ROLL = 0.15;
@@ -342,14 +342,27 @@
 		if (wheelRearLeftPivot) inner.add(wheelRearLeftPivot);
 		if (wheelRearRightPivot) inner.add(wheelRearRightPivot);
 
-		// Center the assembled model: XZ at origin, bottom at Y=0
+		// Center the assembled model: XZ at origin, wheel bottoms at Y=0
 		const box = new THREE.Box3().setFromObject(outer);
 		const boxCenter = new THREE.Vector3();
 		box.getCenter(boxCenter);
 		inner.position.x -= boxCenter.x / MODEL_SCALE;
 		inner.position.z -= boxCenter.z / MODEL_SCALE;
-		box.setFromObject(outer);
-		inner.position.y -= box.min.y / MODEL_SCALE;
+
+		// Use wheel bottom for Y baseline (not front wing tips which hang lower)
+		let wheelMinY = Infinity;
+		const wheelPivots = [wheelFLPivot, wheelFRPivot, wheelRearLeftPivot, wheelRearRightPivot];
+		for (const wp of wheelPivots) {
+			if (!wp) continue;
+			const wb = new THREE.Box3().setFromObject(wp);
+			if (wb.min.y < wheelMinY) wheelMinY = wb.min.y;
+		}
+		// Fall back to overall bounding box if no wheels found
+		if (!isFinite(wheelMinY)) {
+			box.setFromObject(outer);
+			wheelMinY = box.min.y;
+		}
+		inner.position.y -= wheelMinY / MODEL_SCALE;
 
 		return outer;
 	}
@@ -537,18 +550,18 @@
 		currentSteer += (targetSteerAngle - currentSteer) * Math.min(1, 10 * delta);
 
 		if (wheelFLPivot) {
-			wheelFLPivot.rotation.z -= wheelSpinDelta;
+			wheelFLPivot.rotation.z += wheelSpinDelta;
 			wheelFLPivot.rotation.y = currentSteer;
 		}
 		if (wheelFRPivot) {
-			wheelFRPivot.rotation.z -= wheelSpinDelta;
+			wheelFRPivot.rotation.z += wheelSpinDelta;
 			wheelFRPivot.rotation.y = currentSteer;
 		}
 		if (wheelRearLeftPivot) {
-			wheelRearLeftPivot.rotation.z -= wheelSpinDelta;
+			wheelRearLeftPivot.rotation.z += wheelSpinDelta;
 		}
 		if (wheelRearRightPivot) {
-			wheelRearRightPivot.rotation.z -= wheelSpinDelta;
+			wheelRearRightPivot.rotation.z += wheelSpinDelta;
 		}
 
 		// Point light color update
