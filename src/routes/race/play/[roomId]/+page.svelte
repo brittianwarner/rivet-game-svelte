@@ -10,7 +10,11 @@
   import { RaceStore } from "$lib/racing/race-store.svelte";
   import { setRaceStore, setRaceRoomControls } from "$lib/racing/context";
   import { useRaceRoom } from "$lib/racing/use-race-room.svelte";
-  import { CAR_VARIANT_COLORS, RACE_LAP_COUNT, KART_MAX_SPEED } from "$lib/racing/types";
+  import { RACE_LAP_COUNT, KART_MAX_SPEED } from "$lib/racing/types";
+  import {
+    getPlayerAccentColor,
+    resolveRaceCarIdFromSearchParams,
+  } from "$lib/racing/car-catalog";
 
   const roomId = page.params.roomId ?? "";
   const searchParams =
@@ -18,12 +22,12 @@
       ? new URLSearchParams(window.location.search)
       : new URLSearchParams();
   const playerName = searchParams.get("name") ?? "Anonymous";
-  const carVariant = parseInt(searchParams.get("car") ?? "0", 10) || 0;
+  const carId = resolveRaceCarIdFromSearchParams(searchParams);
 
   const store = new RaceStore();
   setRaceStore(store);
 
-  const controls = useRaceRoom({ roomId, playerName, carVariant, store });
+  const controls = useRaceRoom({ roomId, playerName, carId, store });
   setRaceRoomControls(controls);
 
   // Mobile detection
@@ -127,7 +131,7 @@
       return {
         name: kart.name,
         time: kart.finishTime ? formatTime(kart.finishTime) : "DNF",
-        color: CAR_VARIANT_COLORS[kart.carVariant] ?? "#FFF",
+        color: getPlayerAccentColor(kart.accentIndex),
       };
     });
   }

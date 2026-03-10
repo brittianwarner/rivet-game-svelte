@@ -55,7 +55,6 @@ import {
   SPIN_DURATION,
   STAR_DURATION,
   STAR_SPEED_BONUS,
-  CAR_VARIANT_COLORS,
   sanitizeName,
   plainVec3,
   vec3Zero,
@@ -84,7 +83,47 @@ import {
   SNAP_STEERING_MULT,
   HIT_IMMUNITY_TICKS,
   BLUE_SHELL_GAP_THRESHOLD,
+  // Grip-budget / slip angle
+  SLIP_ANGLE_BUILDUP,
+  SLIP_ANGLE_RECOVERY,
+  SLIP_ANGLE_MAX,
+  GRIP_LOSS_AT_MAX_SLIP,
+  LATERAL_PUSH_STRENGTH,
+  DRIFT_SLIP_FLOOR,
+  // Surface types
+  SURFACE_GRIP,
+  SURFACE_DRAG,
+  SURFACE_DRIFT_CHARGE_MULT,
+  DUST_CARRYOVER_TICKS,
+  DUST_CARRYOVER_GRIP_PENALTY,
+  // Compression / banking
+  CREST_GRIP_LOSS,
+  COMPRESSION_GRIP_GAIN,
+  LANDING_SCRUB_THRESHOLD,
+  LANDING_SCRUB_PENALTY,
+  LANDING_CLEAN_BONUS,
+  BANKING_GRIP_BONUS,
+  // Contact duel
+  SIDE_RUB_SCRUB_RATE,
+  REAR_TAP_DESTABILIZE,
+  WALL_SCRUB_SPEED_LOSS,
+  WALL_SCRUB_ANGLE_THRESHOLD,
+  MASS_ADVANTAGE_PUSH,
+  // Flow chain
+  FLOW_GAIN_DRIFT_RELEASE,
+  FLOW_GAIN_CLEAN_CORNER,
+  FLOW_GAIN_SLIPSTREAM,
+  FLOW_GAIN_BOOST_PAD,
+  FLOW_GAIN_ROCKET_START,
+  FLOW_DECAY_PER_TICK,
+  FLOW_DECAY_ON_HIT,
+  FLOW_DECAY_OFF_ROAD,
+  FLOW_MAX,
+  FLOW_SPEED_BONUS,
+  FLOW_TURN_BONUS,
+  FLOW_BOOST_EXTEND_MULT,
   // Types
+  type SurfaceType,
   type RaceStats,
   type RocketStartTier,
   type DriftCharge,
@@ -116,7 +155,9 @@ import {
   type ReadyStateEvent,
   type RematchVoteEvent,
   type RaceToastEvent,
+  type TrackId,
 } from "../../racing/types.js";
+import { coerceRaceCarId } from "../../racing/car-catalog.js";
 import {
   getTrack,
   findNearestSegment,
@@ -124,6 +165,8 @@ import {
   isOnRoad,
   isInBoostZone,
   getRespawnPosition,
+  sampleRoadHeight,
+  sampleRoadDistance,
 } from "../../racing/track.js";
 
 // ---------------------------------------------------------------------------
@@ -132,13 +175,14 @@ import {
 
 interface ConnParams {
   playerName: string;
-  carVariant: number;
+  carId: string;
 }
 
 interface ConnState {
   playerId: string;
   playerName: string;
-  carVariant: number;
+  carId: string;
+  accentIndex: number;
   input: KartInput;
   lastInputAt: number;
   // Ready state
@@ -164,6 +208,11 @@ interface ConnState {
   // Hitstop pending data
   hitstopPendingSpeed: number;
   hitstopPendingDrift: boolean;
+  // Surface / grip-budget
+  dustCarryoverTicks: number;
+  prevElevation: number;
+  airborne: boolean;
+  prevSegIdx: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -196,14 +245,16 @@ function defaultStats(): RaceStats {
 function createKart(
   id: string,
   name: string,
-  carVariant: number,
+  carId: string,
+  accentIndex: number,
   position: Vec3,
   heading: number,
 ): KartState {
   return {
     id,
     name,
-    carVariant,
+    carId: coerceRaceCarId(carId),
+    accentIndex,
     position: plainVec3(position),
     heading,
     speed: 0,
@@ -224,12 +275,16 @@ function createKart(
     slipstreamTicks: 0,
     hitstopTicks: 0,
     rocketStartTier: "none",
+    slipAngle: 0,
+    flowMeter: 0,
+    surface: "asphalt",
+    loadFactor: 1,
   };
 }
 
 /** Generate initial item boxes from the track definition */
-function generateItemBoxes(): ItemBoxState[] {
-  const track = getTrack();
+function generateItemBoxes(trackId: TrackId): ItemBoxState[] {
+  const track = getTrack(trackId);
   const boxes: ItemBoxState[] = [];
   let boxId = 0;
   for (const zone of track.itemBoxZones) {
@@ -247,7 +302,7 @@ function generateItemBoxes(): ItemBoxState[] {
 
 /** Reset all karts to grid positions for race start */
 function resetForRaceStart(c: any): void {
-  const track = getTrack();
+  const track = getTrack(c.state.trackId);
   const playerIds = Object.keys(c.state.players);
   for (let i = 0; i < playerIds.length; i++) {
     const kart = c.state.players[playerIds[i]] as KartState;
@@ -272,11 +327,15 @@ function resetForRaceStart(c: any): void {
     kart.slipstreamTicks = 0;
     kart.hitstopTicks = 0;
     kart.rocketStartTier = "none";
+    kart.slipAngle = 0;
+    kart.flowMeter = 0;
+    kart.surface = "asphalt";
+    kart.loadFactor = 1;
   }
   // Reset items on track
   c.state.projectiles = [];
   c.state.hazards = [];
-  c.state.itemBoxes = generateItemBoxes();
+  c.state.itemBoxes = generateItemBoxes(c.state.trackId);
   c.state.finishedCount = 0;
   c.state.positions = playerIds;
   c.state.rematchVotes = {};
@@ -302,6 +361,10 @@ function resetForRaceStart(c: any): void {
     cs.driftReleaseGraceCharge = 0;
     cs.hitstopPendingSpeed = 0;
     cs.hitstopPendingDrift = false;
+    cs.dustCarryoverTicks = 0;
+    cs.prevElevation = 0;
+    cs.airborne = false;
+    cs.prevSegIdx = 0;
   }
 }
 
@@ -482,16 +545,16 @@ function tryStartCountdown(c: any): void {
 export const raceRoom = actor({
   createState: (c: any): RaceRoomState => ({
     id: c.key?.[0] ?? `race_${Date.now().toString(36)}`,
-    name: "Neon Circuit",
+    name: "Track 1",
     players: {},
     projectiles: [],
     hazards: [],
-    itemBoxes: generateItemBoxes(),
+    itemBoxes: generateItemBoxes("track1"),
     phase: "waiting" as RacePhase,
     lapCount: RACE_LAP_COUNT,
     raceTimer: 0,
     maxPlayers: RACE_MAX_PLAYERS,
-    trackId: "neon-circuit",
+    trackId: "track1",
     createdAt: Date.now(),
     phaseStartedAt: Date.now(),
     positions: [],
@@ -513,10 +576,12 @@ export const raceRoom = actor({
     }
 
     const playerId = `k_${uid()}`;
+    const accentIndex = Math.max(0, playerCount % RACE_MAX_PLAYERS);
     return {
       playerId,
       playerName: sanitizeName(params.playerName),
-      carVariant: Math.max(0, Math.min(3, Math.floor(Number(params.carVariant) || 0))),
+      carId: coerceRaceCarId(params.carId),
+      accentIndex,
       input: { steering: 0, throttle: false, brake: false, drift: false, useItem: false },
       lastInputAt: 0,
       ready: false,
@@ -533,6 +598,10 @@ export const raceRoom = actor({
       driftReleaseGraceCharge: 0,
       hitstopPendingSpeed: 0,
       hitstopPendingDrift: false,
+      dustCarryoverTicks: 0,
+      prevElevation: 0,
+      airborne: false,
+      prevSegIdx: 0,
     };
   },
 
@@ -568,7 +637,7 @@ export const raceRoom = actor({
 
   onConnect: (c: any, conn: any) => {
     const cs = conn.state as ConnState;
-    const { playerId, playerName, carVariant } = cs;
+    const { playerId, playerName, carId, accentIndex } = cs;
     const state = c.state as RaceRoomState;
 
     // Spectators don't get a kart
@@ -582,13 +651,14 @@ export const raceRoom = actor({
       return;
     }
 
-    const track = getTrack();
+    const track = getTrack(state.trackId);
     const gridPos = track.startPositions[existingCount] ?? track.startPositions[0];
 
     const kart = createKart(
       playerId,
       playerName,
-      carVariant,
+      carId,
+      accentIndex,
       gridPos,
       track.startHeading,
     );
@@ -734,7 +804,7 @@ export const raceRoom = actor({
 
       // Physics simulation when racing
       if (state.phase === "racing") {
-        const track = getTrack();
+        const track = getTrack(state.trackId);
         kartPhysicsTick(c, dt, now, track, tickCounter);
         slipstreamTick(c, track);
         kartCollisionTick(c, dt);
@@ -1011,6 +1081,7 @@ function evaluateRocketStarts(c: any, goTick: number): void {
     kart.rocketStartTier = tier;
     kart.boostSpeed = boostSpeed;
     kart.boostTimer = boostDuration;
+    kart.flowMeter = Math.min(FLOW_MAX, kart.flowMeter + FLOW_GAIN_ROCKET_START * (tier === "perfect" ? 1.0 : tier === "good" ? 0.6 : 0.3));
 
     c.broadcast("rocketStart", {
       kartId: kart.id,
@@ -1156,7 +1227,7 @@ function createShellProjectile(
     type,
     position: {
       x: kart.position.x + forwardX * (KART_RADIUS + SHELL_RADIUS + 0.2),
-      y: 0.3,
+      y: kart.position.y + 0.3,
       z: kart.position.z + forwardZ * (KART_RADIUS + SHELL_RADIUS + 0.2),
     },
     velocity: {
@@ -1180,7 +1251,7 @@ function createBananaHazard(kart: KartState): HazardState {
     type: "banana",
     position: {
       x: kart.position.x + backX * (KART_RADIUS + BANANA_RADIUS + 0.3),
-      y: 0.15,
+      y: kart.position.y + 0.15,
       z: kart.position.z + backZ * (KART_RADIUS + BANANA_RADIUS + 0.3),
     },
     ownerId: kart.id,
@@ -1229,7 +1300,9 @@ function applyHitToKart(
     kart.driftState = defaultDrift();
   }
 
-  // Track hit stats
+  kart.flowMeter = Math.max(0, kart.flowMeter - FLOW_DECAY_ON_HIT);
+  kart.slipAngle = 0;
+
   if (byKartId && state.stats[byKartId]) state.stats[byKartId].hitsDealt++;
   if (state.stats[kart.id]) state.stats[kart.id].hitsTaken++;
 
@@ -1420,6 +1493,7 @@ function slipstreamTick(c: any, track: ReturnType<typeof getTrack>): void {
       if (cs.slipstreamTicks >= SLIPSTREAM_CHARGE_TICKS && !kart.slipstreamActive) {
         kart.slipstreamActive = true;
         cs.slipstreamBonusTicks = SLIPSTREAM_DURATION_TICKS;
+        kart.flowMeter = Math.min(FLOW_MAX, kart.flowMeter + FLOW_GAIN_SLIPSTREAM);
         c.broadcast("slipstream", { kartId: kart.id, active: true });
       }
     } else {
@@ -1579,33 +1653,125 @@ function kartPhysicsTick(
       }
     }
 
-    // --- Drag ---
-    kart.speed *= 1 - KART_DRAG * dt;
+    // --- Surface check & classification ---
+    const segIdx = findNearestSegment(segments, kart.position.x, kart.position.z, cs.prevSegIdx);
+    const seg = segments[segIdx];
+    const hw = Math.sqrt(
+      (seg.right.x - seg.left.x) ** 2 + (seg.right.z - seg.left.z) ** 2,
+    ) / 2;
+    const lateralDist = Math.abs(getLateralOffset(segments, segIdx, kart.position.x, kart.position.z));
+    const onRoadHw = hw * 1.3;
+    const meshRoadDistance =
+      state.trackId === "track1"
+        ? sampleRoadDistance(kart.position.x, kart.position.z)
+        : 0;
+    const onRoad =
+      state.trackId === "track1"
+        ? meshRoadDistance <= 4
+        : lateralDist <= onRoadHw;
 
-    // --- Surface check ---
-    const segIdx = findNearestSegment(segments, kart.position.x, kart.position.z);
-    const onRoad = isOnRoad(segments, segIdx, kart.position.x, kart.position.z);
-
+    let surface: SurfaceType = "asphalt";
     if (!onRoad) {
-      // Check how far off-road
-      const seg = segments[segIdx];
-      const hw =
-        Math.sqrt(
-          (seg.right.x - seg.left.x) ** 2 + (seg.right.z - seg.left.z) ** 2,
-        ) / 2;
-      const lateralDist = Math.abs(getLateralOffset(segments, segIdx, kart.position.x, kart.position.z));
-
-      if (lateralDist > hw * OUT_OF_BOUNDS_BOUNDARY) {
-        // Way off-track — trigger fall/respawn
+      const outOfBounds =
+        state.trackId === "track1"
+          ? meshRoadDistance > 120
+          : lateralDist > onRoadHw * OUT_OF_BOUNDS_BOUNDARY;
+      if (outOfBounds) {
         kart.status = "falling";
         kart.statusTimer = SPIN_DURATION;
         kart.speed = 0;
         kart.driftState = defaultDrift();
+        kart.flowMeter = Math.max(0, kart.flowMeter - FLOW_DECAY_ON_HIT);
         continue;
       }
+      if (state.trackId === "track1") {
+        surface = meshRoadDistance > 40 ? "sand" : "shoulder";
+      } else {
+        const offRoadRatio = (lateralDist - onRoadHw) / (onRoadHw * (OUT_OF_BOUNDS_BOUNDARY - 1));
+        surface = offRoadRatio > 0.6 ? "sand" : "shoulder";
+      }
+    } else {
+      if (state.trackId === "track1") {
+        if (meshRoadDistance > 0 && meshRoadDistance < 10) surface = "rumble";
+      } else {
+        const edgeProximity = lateralDist / onRoadHw;
+        if (edgeProximity > 0.95) surface = "rumble";
+      }
+    }
+    kart.surface = surface;
 
-      // Off-road slowdown (extra drag per tick, scaled by dt)
-      kart.speed *= 1 - (1 - OFF_ROAD_SPEED_MULT) * 0.05 * dt;
+    const surfaceGrip = SURFACE_GRIP[surface];
+    const surfaceDrag = SURFACE_DRAG[surface];
+    const surfaceDriftMult = SURFACE_DRIFT_CHARGE_MULT[surface];
+
+    if (cs.dustCarryoverTicks > 0) cs.dustCarryoverTicks--;
+    if (surface !== "asphalt" && surface !== "rumble") {
+      cs.dustCarryoverTicks = DUST_CARRYOVER_TICKS;
+    }
+    const dustPenalty = cs.dustCarryoverTicks > 0 ? DUST_CARRYOVER_GRIP_PENALTY : 0;
+
+    // --- Compression / banking / load factor ---
+    // Use only adjacent segment for elevation delta to avoid large jumps
+    const adjSegIdx = Math.abs(segIdx - cs.prevSegIdx) <= 2
+      ? cs.prevSegIdx
+      : (segIdx - 1 + segments.length) % segments.length;
+    const prevSeg = segments[adjSegIdx] || seg;
+    const elevDelta = seg.center.y - prevSeg.center.y;
+    let loadFactor = 1.0;
+    // Clamp elevation delta to reasonable range to prevent wild grip swings
+    const clampedDelta = Math.max(-2, Math.min(2, elevDelta));
+    if (clampedDelta > 0.1) {
+      loadFactor = 1.0 + Math.min(clampedDelta * 0.5, COMPRESSION_GRIP_GAIN);
+    } else if (clampedDelta < -0.1) {
+      loadFactor = 1.0 - Math.min(Math.abs(clampedDelta) * 0.5, CREST_GRIP_LOSS);
+    }
+
+    const bankAngle = seg.left.y !== seg.right.y
+      ? Math.atan2(Math.abs(seg.left.y - seg.right.y), hw * 2)
+      : 0;
+    const bankBonus = bankAngle * BANKING_GRIP_BONUS * 10;
+    loadFactor = Math.max(0.6, Math.min(1.3, loadFactor + bankBonus));
+    kart.loadFactor = loadFactor;
+
+    const wasAirborne = cs.airborne;
+    cs.airborne = loadFactor < 0.55;
+    if (wasAirborne && !cs.airborne) {
+      if (Math.abs(kart.slipAngle) > LANDING_SCRUB_THRESHOLD) {
+        kart.speed *= 1 - LANDING_SCRUB_PENALTY;
+      } else {
+        kart.speed += LANDING_CLEAN_BONUS;
+        kart.flowMeter = Math.min(FLOW_MAX, kart.flowMeter + 0.02);
+      }
+    }
+    cs.prevSegIdx = segIdx;
+    cs.prevElevation = seg.center.y;
+
+    // --- Effective grip (combines surface, load, dust, flow) ---
+    const flowGripBonus = kart.flowMeter * FLOW_TURN_BONUS;
+    const effectiveGrip = Math.max(0.2, (surfaceGrip - dustPenalty) * loadFactor + flowGripBonus);
+
+    // --- Drag (surface-aware) ---
+    kart.speed *= 1 - KART_DRAG * surfaceDrag * dt;
+
+    // --- Off-road flow decay + wall scrub ---
+    if (!onRoad) {
+      const offAmount =
+        state.trackId === "track1"
+          ? Math.min(1, meshRoadDistance / 40)
+          : (lateralDist - onRoadHw) / onRoadHw;
+      const offRoadDrag = (1 - OFF_ROAD_SPEED_MULT) * 0.02 * Math.min(1, offAmount) * dt;
+      kart.speed *= 1 - offRoadDrag;
+      kart.flowMeter = Math.max(0, kart.flowMeter - FLOW_DECAY_OFF_ROAD * 0.5 * dt);
+
+      if (offAmount > 0.5) {
+        const headingAlignToNormal = Math.abs(
+          Math.sin(kart.heading) * seg.normal.x + Math.cos(kart.heading) * seg.normal.z
+        );
+        if (headingAlignToNormal > WALL_SCRUB_ANGLE_THRESHOLD) {
+          kart.speed *= 1 - WALL_SCRUB_SPEED_LOSS * 0.5;
+          kart.slipAngle = Math.min(SLIP_ANGLE_MAX, kart.slipAngle + 0.03);
+        }
+      }
     }
 
     // --- Boost zone check ---
@@ -1613,27 +1779,29 @@ function kartPhysicsTick(
       if (kart.boostTimer <= 0 || kart.boostSpeed < BOOST_PAD_SPEED) {
         kart.boostSpeed = BOOST_PAD_SPEED;
         kart.boostTimer = BOOST_PAD_DURATION;
+        kart.flowMeter = Math.min(FLOW_MAX, kart.flowMeter + FLOW_GAIN_BOOST_PAD);
       }
     }
 
-    // --- Active boost timer ---
+    // --- Active boost timer (flow extends duration) ---
     if (kart.boostTimer > 0) {
-      kart.boostTimer -= dt * RACE_SERVER_TICK_INTERVAL;
+      const boostDecay = dt * RACE_SERVER_TICK_INTERVAL;
+      const flowExtend = kart.flowMeter > 0.5 ? FLOW_BOOST_EXTEND_MULT : 1.0;
+      kart.boostTimer -= boostDecay / flowExtend;
       if (kart.boostTimer <= 0) {
         kart.boostTimer = 0;
         kart.boostSpeed = 0;
-        // Clear stall tier when stall timer expires
         if (kart.rocketStartTier === "stall") {
           kart.rocketStartTier = "none";
         }
       }
     }
 
-    // --- Speed cap ---
+    // --- Speed cap (with flow bonus) ---
     const slipBonus = getSlipstreamBonus(cs);
-    let maxSpeed = (KART_MAX_SPEED + kart.boostSpeed + slipBonus) * shrunkMult;
+    const flowSpeedBonus = kart.flowMeter * FLOW_SPEED_BONUS;
+    let maxSpeed = (KART_MAX_SPEED + kart.boostSpeed + slipBonus + flowSpeedBonus) * shrunkMult;
 
-    // Apply stall penalty
     if (isStalling) {
       maxSpeed = Math.min(maxSpeed, ROCKET_START_STALL_MAX_SPEED);
     }
@@ -1642,16 +1810,16 @@ function kartPhysicsTick(
     if (kart.speed > maxSpeed) kart.speed = maxSpeed;
     if (kart.speed < -maxReverse) kart.speed = -maxReverse;
 
-    // --- Track top speed stat ---
     if (state.stats[cs.playerId]) {
       if (Math.abs(kart.speed) > state.stats[cs.playerId].topSpeed) {
         state.stats[cs.playerId].topSpeed = Math.abs(kart.speed);
       }
     }
 
-    // --- Improved Turn Curve ---
+    // --- Improved Turn Curve (grip-aware) ---
     const speedRatio = Math.abs(kart.speed) / KART_MAX_SPEED;
     let turnRate = KART_TURN_RATE * (1 - TURN_HIGH_SPEED_REDUCTION * Math.pow(speedRatio, TURN_CURVE_EXPONENT));
+    turnRate *= effectiveGrip;
 
     if (kart.driftState.active) {
       turnRate *= DRIFT_TURN_MULTIPLIER;
@@ -1659,8 +1827,6 @@ function kartPhysicsTick(
 
     // --- Counter-steer bonus ---
     const currentSteerDir = input.steering > 0.01 ? 1 : (input.steering < -0.01 ? -1 : 0);
-    // Angular velocity direction: if heading is decreasing, kart is turning right (positive steer)
-    // We use lastSteerDirection as a proxy for the current angular velocity direction
     if (currentSteerDir !== 0 && cs.lastSteerDirection !== 0 && currentSteerDir !== cs.lastSteerDirection) {
       turnRate *= COUNTER_STEER_BONUS;
     }
@@ -1668,12 +1834,10 @@ function kartPhysicsTick(
     // --- Snap Steering ---
     const prevSign = cs.prevSteerSign;
     if (currentSteerDir !== 0 && (prevSign === 0 || currentSteerDir !== prevSign)) {
-      // New steering input detected — reset snap counter
       cs.steerInputTicks = 0;
     }
 
     if (currentSteerDir !== 0 && cs.steerInputTicks < SNAP_STEERING_FRAMES) {
-      // Apply snap steering multiplier, decaying linearly from SNAP_STEERING_MULT to 1.0
       const snapProgress = cs.steerInputTicks / SNAP_STEERING_FRAMES;
       const snapMult = SNAP_STEERING_MULT + (1.0 - SNAP_STEERING_MULT) * snapProgress;
       turnRate *= snapMult;
@@ -1689,6 +1853,32 @@ function kartPhysicsTick(
 
     const steerAmount = input.steering * turnRate * dt;
     kart.heading -= steerAmount;
+
+    // --- Slip angle / lateral velocity (Grip-Budget) ---
+    const steerMagnitude = Math.abs(steerAmount);
+    const speedFactor = Math.min(1, Math.abs(kart.speed) / KART_MAX_SPEED);
+    const slipBuildup = steerMagnitude * speedFactor * SLIP_ANGLE_BUILDUP * 0.7;
+    const slipRecovery = SLIP_ANGLE_RECOVERY * effectiveGrip * dt * 1.5;
+    const driftFloor = kart.driftState.active ? DRIFT_SLIP_FLOOR : 0;
+
+    kart.slipAngle = Math.max(driftFloor, Math.min(SLIP_ANGLE_MAX,
+      kart.slipAngle + slipBuildup - slipRecovery
+    ));
+
+    const gripLoss = (kart.slipAngle / SLIP_ANGLE_MAX) * GRIP_LOSS_AT_MAX_SLIP;
+    if (kart.slipAngle > 0.15) {
+      kart.speed *= 1 - gripLoss * 0.01 * dt;
+    }
+
+    const lateralPush = kart.slipAngle * LATERAL_PUSH_STRENGTH * Math.sign(input.steering || kart.driftState.direction) * kart.speed;
+
+    // --- Flow meter natural decay ---
+    kart.flowMeter = Math.max(0, kart.flowMeter - FLOW_DECAY_PER_TICK * dt);
+
+    // --- Flow: clean corner detection (high speed through turn without off-road) ---
+    if (onRoad && steerMagnitude > 0.01 && speedRatio > 0.7 && kart.slipAngle < SLIP_ANGLE_MAX * 0.6) {
+      kart.flowMeter = Math.min(FLOW_MAX, kart.flowMeter + FLOW_GAIN_CLEAN_CORNER * dt);
+    }
 
     // --- Drift mechanics ---
     const drift = kart.driftState;
@@ -1711,8 +1901,7 @@ function kartPhysicsTick(
 
     if (drift.active) {
       if (input.drift && Math.abs(kart.speed) > MIN_DRIFT_SPEED * 0.5) {
-        // Continue drifting — increment charge timer
-        drift.timer += 1;
+        drift.timer += surfaceDriftMult;
 
         // Check charge thresholds and broadcast tier events
         const prevCharge = drift.charge;
@@ -1750,8 +1939,8 @@ function kartPhysicsTick(
           const chargeIdx = (chargeToUse - 1) as 0 | 1 | 2;
           kart.boostSpeed = DRIFT_BOOST_SPEEDS[chargeIdx];
           kart.boostTimer = DRIFT_BOOST_DURATIONS[chargeIdx];
+          kart.flowMeter = Math.min(FLOW_MAX, kart.flowMeter + FLOW_GAIN_DRIFT_RELEASE * chargeToUse);
 
-          // Track drift boost stat
           if (state.stats[cs.playerId]) {
             state.stats[cs.playerId].driftBoosts++;
           }
@@ -1767,43 +1956,39 @@ function kartPhysicsTick(
       }
     }
 
-    // --- Elevation-Aware Physics ---
-    const seg = segments[segIdx];
-    
-    // Interpolate Y based on lateral offset to follow track banking
-    const lateral = getLateralOffset(segments, segIdx, kart.position.x, kart.position.z);
-    const hw = Math.sqrt(
-      (seg.right.x - seg.left.x) ** 2 + (seg.right.z - seg.left.z) ** 2,
-    ) / 2;
-    
-    let targetY = seg.center.y;
-    if (hw > 0) {
-      const t = Math.max(-1, Math.min(1, lateral / hw));
-      if (t > 0) {
-        targetY = seg.center.y + t * (seg.right.y - seg.center.y);
-      } else {
-        targetY = seg.center.y + Math.abs(t) * (seg.left.y - seg.center.y);
-      }
-    }
+    // --- Mesh heightfield placement ---
+    // Track1 elevation should come from the baked road mesh, not the sampled
+    // centerline, so the kart stays glued to the visible road surface.
+    const nextSegIdx = (segIdx + 1) % segments.length;
+    const prevSegIdx2 = (segIdx - 1 + segments.length) % segments.length;
+    const nextSeg = segments[nextSegIdx];
+    const prevSeg2 = segments[prevSegIdx2];
+    const meshY = sampleRoadHeight(kart.position.x, kart.position.z);
+    const targetY = meshY ?? seg.center.y;
 
-    // --- Position integration ---
+    // --- Position integration (with lateral push from slip angle) ---
     const vx = Math.sin(kart.heading) * kart.speed;
     const vz = Math.cos(kart.heading) * kart.speed;
+    const lateralNx = -Math.cos(kart.heading);
+    const lateralNz = Math.sin(kart.heading);
 
-    kart.position.x += vx * dt;
-    kart.position.z += vz * dt;
-    kart.position.y = targetY + 0.5;
+    kart.position.x += (vx + lateralNx * lateralPush) * dt;
+    kart.position.z += (vz + lateralNz * lateralPush) * dt;
 
-    // --- Slope force: apply acceleration based on segment's forward Y component ---
+    const desiredY = targetY + 2.5;
+    kart.position.y += (desiredY - kart.position.y) * 0.3;
+
+    // --- Slope force (smoothed over 3 segments) ---
+    const slopeGradient = (nextSeg.center.y - prevSeg2.center.y) /
+      (Math.max(1, segments[nextSegIdx].distance - segments[prevSegIdx2].distance) || 1);
     const headingDirX = Math.sin(kart.heading);
     const headingDirZ = Math.cos(kart.heading);
     const alignment = headingDirX * seg.forward.x + headingDirZ * seg.forward.z;
-    const gravityForce = -seg.forward.y * 0.02; // Force along the track direction
-    const slopeForce = gravityForce * alignment * dt;
+    const slopeForce = -slopeGradient * 0.015 * alignment * dt;
     kart.speed += slopeForce;
 
     // --- Update velocity for snapshot interpolation ---
-    kart.velocity = { x: vx, y: 0, z: vz };
+    kart.velocity = { x: vx + lateralNx * lateralPush, y: 0, z: vz + lateralNz * lateralPush };
   }
 }
 
@@ -1834,14 +2019,12 @@ function kartCollisionTick(c: any, dt: number): void {
       const nx = dx / dist;
       const nz = dz / dist;
 
-      // Push apart
       const overlap = (minDist - dist) / 2;
       a.position.x -= nx * overlap;
       a.position.z -= nz * overlap;
       b.position.x += nx * overlap;
       b.position.z += nz * overlap;
 
-      // Apply push force to speeds (along collision normal vs heading)
       const aForwardX = Math.sin(a.heading);
       const aForwardZ = Math.cos(a.heading);
       const bForwardX = Math.sin(b.heading);
@@ -1850,8 +2033,28 @@ function kartCollisionTick(c: any, dt: number): void {
       const aDot = aForwardX * nx + aForwardZ * nz;
       const bDot = bForwardX * (-nx) + bForwardZ * (-nz);
 
-      a.speed -= aDot * KART_COLLISION_PUSH;
-      b.speed -= bDot * KART_COLLISION_PUSH;
+      const isSideContact = Math.abs(aDot) < 0.5 && Math.abs(bDot) < 0.5;
+      const isRearTap = (aDot > 0.6 && bDot < -0.3) || (bDot > 0.6 && aDot < -0.3);
+
+      if (isSideContact) {
+        a.speed -= SIDE_RUB_SCRUB_RATE * Math.abs(a.speed);
+        b.speed -= SIDE_RUB_SCRUB_RATE * Math.abs(b.speed);
+        a.slipAngle = Math.min(SLIP_ANGLE_MAX, a.slipAngle + 0.03);
+        b.slipAngle = Math.min(SLIP_ANGLE_MAX, b.slipAngle + 0.03);
+      } else if (isRearTap) {
+        if (aDot > bDot) {
+          b.slipAngle = Math.min(SLIP_ANGLE_MAX, b.slipAngle + REAR_TAP_DESTABILIZE);
+          b.speed -= KART_COLLISION_PUSH * 1.5;
+          a.speed -= KART_COLLISION_PUSH * 0.5;
+        } else {
+          a.slipAngle = Math.min(SLIP_ANGLE_MAX, a.slipAngle + REAR_TAP_DESTABILIZE);
+          a.speed -= KART_COLLISION_PUSH * 1.5;
+          b.speed -= KART_COLLISION_PUSH * 0.5;
+        }
+      } else {
+        a.speed -= aDot * KART_COLLISION_PUSH;
+        b.speed -= bDot * KART_COLLISION_PUSH;
+      }
 
       // Star collision — starred kart spins the other
       if (a.status === "starred" && b.status !== "starred") {
@@ -2199,6 +2402,10 @@ function broadcastSnapshot(c: any, tick: number): void {
       boostTimer: k.boostTimer,
       boostSpeed: k.boostSpeed,
       slipstreamActive: k.slipstreamActive,
+      slipAngle: k.slipAngle,
+      flowMeter: k.flowMeter,
+      surface: k.surface,
+      loadFactor: k.loadFactor,
     };
   }
 

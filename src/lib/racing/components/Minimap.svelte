@@ -1,71 +1,81 @@
 <!--
   Minimap — top-down HTML/SVG overlay showing the track outline and kart positions.
   Positioned in the top-right corner of the viewport.
-
-  Reads from RaceStore via context for kart positions/colors, and
-  samples the track center line from getTrack() for the polyline.
-
-  Enhancements:
-  - Boost zone indicators (green marks on the polyline)
-  - Item box indicators (yellow dots)
 -->
 <script lang="ts">
 	import { getRaceStore } from "$lib/racing/context.js";
-	import { getTrack } from "$lib/racing/track.js";
-	import { CAR_VARIANT_COLORS } from "$lib/racing/types.js";
+	import { DEFAULT_TRACK_ID, getTrack } from "$lib/racing/track.js";
+	import { getPlayerAccentColor } from "$lib/racing/car-catalog.js";
 
 	const store = getRaceStore();
-	const track = getTrack();
+	const track = $derived.by(() => getTrack(store.trackId || DEFAULT_TRACK_ID));
 
-	const MAP_SIZE = 150;
-	const PADDING = 10;
+	const MAP_SIZE = 220;
+	const PADDING = 14;
 	const DOT_RADIUS = 4;
 	const LOCAL_DOT_RADIUS = 6;
 
-	// Sample every Nth segment for the polyline (track has ~400 segments)
-	const SAMPLE_INTERVAL = 4;
+	const SAMPLE_INTERVAL = 2;
 
-	// Compute bounding box of track center points for scaling
-	let minX = Infinity;
-	let maxX = -Infinity;
-	let minZ = Infinity;
-	let maxZ = -Infinity;
+	const projection = $derived.by(() => {
+		let minX = Infinity;
+		let maxX = -Infinity;
+		let minZ = Infinity;
+		let maxZ = -Infinity;
 
-	for (const seg of track.segments) {
-		if (seg.center.x < minX) minX = seg.center.x;
-		if (seg.center.x > maxX) maxX = seg.center.x;
-		if (seg.center.z < minZ) minZ = seg.center.z;
-		if (seg.center.z > maxZ) maxZ = seg.center.z;
-	}
+		for (const seg of track.segments) {
+			const lx = Math.min(seg.left.x, seg.right.x);
+			const rx = Math.max(seg.left.x, seg.right.x);
+			const lz = Math.min(seg.left.z, seg.right.z);
+			const rz = Math.max(seg.left.z, seg.right.z);
+			if (lx < minX) minX = lx;
+			if (rx > maxX) maxX = rx;
+			if (lz < minZ) minZ = lz;
+			if (rz > maxZ) maxZ = rz;
+		}
 
-	const rangeX = maxX - minX || 1;
-	const rangeZ = maxZ - minZ || 1;
-	const scale = (MAP_SIZE - PADDING * 2) / Math.max(rangeX, rangeZ);
-	const offsetX = (MAP_SIZE - rangeX * scale) / 2;
-	const offsetZ = (MAP_SIZE - rangeZ * scale) / 2;
+		const rangeX = maxX - minX || 1;
+		const rangeZ = maxZ - minZ || 1;
+		const scale = (MAP_SIZE - PADDING * 2) / Math.max(rangeX, rangeZ);
+		const offsetX = (MAP_SIZE - rangeX * scale) / 2;
+		const offsetZ = (MAP_SIZE - rangeZ * scale) / 2;
+
+		return { minX, minZ, scale, offsetX, offsetZ };
+	});
 
 	function toMapX(worldX: number): number {
-		return (worldX - minX) * scale + offsetX;
+		return (worldX - projection.minX) * projection.scale + projection.offsetX;
 	}
 
 	function toMapY(worldZ: number): number {
-		return (worldZ - minZ) * scale + offsetZ;
+		return (worldZ - projection.minZ) * projection.scale + projection.offsetZ;
 	}
 
-	// Pre-compute sampled track polyline points string
-	const trackPoints = $derived.by(() => {
+	const trackPolygon = $derived.by(() => {
+		const leftPts: string[] = [];
+		const rightPts: string[] = [];
+		for (let i = 0; i < track.segments.length; i += SAMPLE_INTERVAL) {
+			const seg = track.segments[i];
+			leftPts.push(`${toMapX(seg.left.x).toFixed(1)},${toMapY(seg.left.z).toFixed(1)}`);
+			rightPts.push(`${toMapX(seg.right.x).toFixed(1)},${toMapY(seg.right.z).toFixed(1)}`);
+		}
+		const first = track.segments[0];
+		leftPts.push(`${toMapX(first.left.x).toFixed(1)},${toMapY(first.left.z).toFixed(1)}`);
+		rightPts.push(`${toMapX(first.right.x).toFixed(1)},${toMapY(first.right.z).toFixed(1)}`);
+		return [...leftPts, ...rightPts.reverse()].join(" ");
+	});
+
+	const trackCenterline = $derived.by(() => {
 		const pts: string[] = [];
 		for (let i = 0; i < track.segments.length; i += SAMPLE_INTERVAL) {
 			const seg = track.segments[i];
 			pts.push(`${toMapX(seg.center.x).toFixed(1)},${toMapY(seg.center.z).toFixed(1)}`);
 		}
-		// Close the loop
 		const first = track.segments[0];
 		pts.push(`${toMapX(first.center.x).toFixed(1)},${toMapY(first.center.z).toFixed(1)}`);
 		return pts.join(" ");
 	});
 
-	// Boost zone polyline segments (green highlights on track)
 	const boostMarks = $derived.by(() => {
 		const marks: { points: string }[] = [];
 		for (const bz of track.boostZones) {
@@ -74,7 +84,6 @@
 				const seg = track.segments[i];
 				pts.push(`${toMapX(seg.center.x).toFixed(1)},${toMapY(seg.center.z).toFixed(1)}`);
 			}
-			// Ensure the end segment is included
 			const endSeg = track.segments[Math.min(bz.segmentEnd, track.segments.length - 1)];
 			pts.push(`${toMapX(endSeg.center.x).toFixed(1)},${toMapY(endSeg.center.z).toFixed(1)}`);
 			if (pts.length >= 2) {
@@ -84,7 +93,6 @@
 		return marks;
 	});
 
-	// Item box positions (yellow dots)
 	const itemBoxDots = $derived.by(() => {
 		const dots: { cx: number; cy: number }[] = [];
 		for (const ibz of track.itemBoxZones) {
@@ -98,7 +106,6 @@
 		return dots;
 	});
 
-	// Kart dots — reactive on store.karts
 	const kartDots = $derived.by(() => {
 		const dots: {
 			id: string;
@@ -109,12 +116,11 @@
 		}[] = [];
 
 		for (const kart of Object.values(store.karts)) {
-			const variantColor = CAR_VARIANT_COLORS[kart.carVariant] ?? "#FFFFFF";
 			dots.push({
 				id: kart.id,
 				cx: toMapX(kart.position.x),
 				cy: toMapY(kart.position.z),
-				color: variantColor,
+				color: getPlayerAccentColor(kart.accentIndex),
 				isLocal: kart.id === store.localPlayerId,
 			});
 		}
@@ -122,7 +128,6 @@
 		return dots;
 	});
 
-	// Pulse animation for local player (CSS-driven)
 	let pulsePhase = $state(0);
 
 	$effect(() => {
@@ -153,17 +158,26 @@
 		viewBox={`0 0 ${MAP_SIZE} ${MAP_SIZE}`}
 		xmlns="http://www.w3.org/2000/svg"
 	>
-		<!-- Track outline -->
-		<polyline
-			points={trackPoints}
-			fill="none"
-			stroke="rgba(255, 255, 255, 0.3)"
-			stroke-width="3"
-			stroke-linejoin="round"
-			stroke-linecap="round"
+		<!-- Road surface fill -->
+		<polygon
+			points={trackPolygon}
+			fill="rgba(80, 80, 90, 0.5)"
+			stroke="rgba(255, 255, 255, 0.25)"
+			stroke-width="1"
 		/>
 
-		<!-- Boost zone indicators (green overlay on track) -->
+		<!-- Center line -->
+		<polyline
+			points={trackCenterline}
+			fill="none"
+			stroke="rgba(255, 255, 255, 0.15)"
+			stroke-width="1"
+			stroke-linejoin="round"
+			stroke-linecap="round"
+			stroke-dasharray="3,3"
+		/>
+
+		<!-- Boost zone indicators -->
 		{#each boostMarks as mark}
 			<polyline
 				points={mark.points}
@@ -175,7 +189,7 @@
 			/>
 		{/each}
 
-		<!-- Item box indicators (yellow dots) -->
+		<!-- Item box indicators -->
 		{#each itemBoxDots as dot}
 			<circle
 				cx={dot.cx}
@@ -199,7 +213,6 @@
 		{/each}
 
 		{#each kartDots.filter((d) => d.isLocal) as dot (dot.id)}
-			<!-- Pulse ring -->
 			<circle
 				cx={dot.cx}
 				cy={dot.cy}
@@ -209,7 +222,6 @@
 				stroke-width="1.5"
 				opacity="0.5"
 			/>
-			<!-- Solid dot -->
 			<circle
 				cx={dot.cx}
 				cy={dot.cy}
@@ -227,8 +239,8 @@
 		position: absolute;
 		top: 12px;
 		right: 12px;
-		width: 150px;
-		height: 150px;
+		width: 220px;
+		height: 220px;
 		background: rgba(0, 0, 0, 0.6);
 		border: 1px solid rgba(255, 255, 255, 0.15);
 		border-radius: 8px;

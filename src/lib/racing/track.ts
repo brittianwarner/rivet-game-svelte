@@ -10,6 +10,7 @@
 import {
   TRACK_ROAD_WIDTH,
   NUM_CHECKPOINTS,
+  type TrackId,
   type TrackPoint,
   type TrackSegment,
   type TrackDefinition,
@@ -20,6 +21,17 @@ import {
   type SceneryObject,
   type Vec3,
 } from "./types.js";
+import { buildTrack1Definition } from "./tracks/track1.js";
+import {
+  TRACK1_HF_CELL_H,
+  TRACK1_HF_CELL_W,
+  TRACK1_HF_COLS,
+  TRACK1_HEIGHTFIELD,
+  TRACK1_HF_ORIGIN_X,
+  TRACK1_HF_ORIGIN_Z,
+  TRACK1_HF_ROWS,
+  TRACK1_HF_SENTINEL,
+} from "./tracks/track1-heightfield.js";
 
 // ---------------------------------------------------------------------------
 // Catmull-Rom interpolation
@@ -96,7 +108,7 @@ function getControlPoints(): TrackPoint[] {
 
 const SEGMENTS_PER_SPAN = 20;
 
-export function generateTrack(): TrackDefinition {
+export function generateNeonCircuitTrack(): TrackDefinition {
   const points = getControlPoints();
   const n = points.length;
   const totalSegments = n * SEGMENTS_PER_SPAN;
@@ -402,7 +414,14 @@ export function generateTrack(): TrackDefinition {
     startHeading,
     shortcuts,
     scenery,
+    visual: {
+      kind: "procedural",
+    },
   };
+}
+
+export function generateTrack(): TrackDefinition {
+  return generateNeonCircuitTrack();
 }
 
 // ---------------------------------------------------------------------------
@@ -411,17 +430,37 @@ export function generateTrack(): TrackDefinition {
 
 /**
  * Find the nearest track segment index for a given world position.
- * Uses a simple linear scan (track is ~460 segments, fast enough at 60Hz).
+ * First checks a local window around the hint index (previous result),
+ * then falls back to a full scan only if the local search is poor.
  */
 export function findNearestSegment(
   segments: TrackSegment[],
   x: number,
   z: number,
+  hintIdx?: number,
 ): number {
+  const n = segments.length;
   let bestIdx = 0;
   let bestDist = Infinity;
 
-  for (let i = 0; i < segments.length; i++) {
+  if (hintIdx !== undefined && hintIdx >= 0 && hintIdx < n) {
+    const window = Math.min(40, Math.floor(n / 4));
+    for (let k = -window; k <= window; k++) {
+      const i = ((hintIdx + k) % n + n) % n;
+      const seg = segments[i];
+      const dx = x - seg.center.x;
+      const dz = z - seg.center.z;
+      const d = dx * dx + dz * dz;
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = i;
+      }
+    }
+    if (bestDist < 10000) return bestIdx;
+  }
+
+  bestDist = Infinity;
+  for (let i = 0; i < n; i++) {
     const seg = segments[i];
     const dx = x - seg.center.x;
     const dz = z - seg.center.z;
@@ -492,20 +531,128 @@ export function getRespawnPosition(
 ): { position: Vec3; heading: number } {
   const seg = segments[segIdx];
   return {
-    position: { x: seg.center.x, y: seg.center.y + 0.5, z: seg.center.z },
+    position: { x: seg.center.x, y: seg.center.y + 2.5, z: seg.center.z },
     heading: Math.atan2(seg.forward.x, seg.forward.z),
   };
 }
 
-// ---------------------------------------------------------------------------
-// Singleton track cache (generated once, shared between server and client)
-// ---------------------------------------------------------------------------
-
-let _cachedTrack: TrackDefinition | null = null;
-
-export function getTrack(): TrackDefinition {
-  if (!_cachedTrack) {
-    _cachedTrack = generateTrack();
+function getHeightfieldValue(col: number, row: number): number | null {
+  if (col < 0 || row < 0 || col >= TRACK1_HF_COLS || row >= TRACK1_HF_ROWS) {
+    return null;
   }
-  return _cachedTrack;
+  const value = TRACK1_HEIGHTFIELD[row * TRACK1_HF_COLS + col];
+  return value === TRACK1_HF_SENTINEL ? null : value;
+}
+
+/**
+ * Sample the road mesh height baked into the track1 heightfield.
+ * Returns null when the queried XZ lies outside the drivable mesh.
+ */
+export function sampleRoadHeight(x: number, z: number): number | null {
+  const localX = (x - TRACK1_HF_ORIGIN_X) / TRACK1_HF_CELL_W;
+  const localZ = (z - TRACK1_HF_ORIGIN_Z) / TRACK1_HF_CELL_H;
+
+  const x0 = Math.floor(localX);
+  const z0 = Math.floor(localZ);
+  const x1 = x0 + 1;
+  const z1 = z0 + 1;
+
+  const fx = localX - x0;
+  const fz = localZ - z0;
+
+  const h00 = getHeightfieldValue(x0, z0);
+  const h10 = getHeightfieldValue(x1, z0);
+  const h01 = getHeightfieldValue(x0, z1);
+  const h11 = getHeightfieldValue(x1, z1);
+
+  const samples = [h00, h10, h01, h11].filter((h): h is number => h !== null);
+  if (samples.length === 0) {
+    return null;
+  }
+
+  // If any corner is missing, fall back to the average of available samples.
+  if (samples.length < 4) {
+    return samples.reduce((sum, value) => sum + value, 0) / samples.length;
+  }
+
+  const top = h00 * (1 - fx) + h10 * fx;
+  const bottom = h01 * (1 - fx) + h11 * fx;
+  return top * (1 - fz) + bottom * fz;
+}
+
+/**
+ * Approximate distance in world units from an XZ point to the baked road mesh.
+ * Returns 0 when the point is inside any occupied road cell.
+ */
+export function sampleRoadDistance(x: number, z: number, maxRings = 10): number {
+  const localX = (x - TRACK1_HF_ORIGIN_X) / TRACK1_HF_CELL_W;
+  const localZ = (z - TRACK1_HF_ORIGIN_Z) / TRACK1_HF_CELL_H;
+  const baseCol = Math.floor(localX);
+  const baseRow = Math.floor(localZ);
+  const halfDiag = Math.sqrt(TRACK1_HF_CELL_W ** 2 + TRACK1_HF_CELL_H ** 2) * 0.5;
+
+  let best = Infinity;
+
+  for (let ring = 0; ring <= maxRings; ring++) {
+    const minCol = baseCol - ring;
+    const maxCol = baseCol + 1 + ring;
+    const minRow = baseRow - ring;
+    const maxRow = baseRow + 1 + ring;
+
+    for (let row = minRow; row <= maxRow; row++) {
+      for (let col = minCol; col <= maxCol; col++) {
+        const isBorder =
+          row === minRow || row === maxRow || col === minCol || col === maxCol;
+        if (!isBorder && ring > 0) continue;
+
+        const height = getHeightfieldValue(col, row);
+        if (height === null) continue;
+
+        const centerX = TRACK1_HF_ORIGIN_X + (col + 0.5) * TRACK1_HF_CELL_W;
+        const centerZ = TRACK1_HF_ORIGIN_Z + (row + 0.5) * TRACK1_HF_CELL_H;
+        const distToCenter = Math.sqrt(
+          (centerX - x) ** 2 + (centerZ - z) ** 2,
+        );
+        const distToCell = Math.max(0, distToCenter - halfDiag);
+
+        if (distToCell < best) {
+          best = distToCell;
+        }
+      }
+    }
+
+    if (best === 0) break;
+  }
+
+  return Number.isFinite(best) ? best : Infinity;
+}
+
+// ---------------------------------------------------------------------------
+// Track registry cache (generated once, shared between server and client)
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_TRACK_ID: TrackId = "track1";
+
+const _cachedTracks = new Map<TrackId, TrackDefinition>();
+
+function createTrack(trackId: TrackId): TrackDefinition {
+  if (trackId === "track1") {
+    return buildTrack1Definition();
+  }
+  return generateNeonCircuitTrack();
+}
+
+export function getTrack(trackId: TrackId = DEFAULT_TRACK_ID): TrackDefinition {
+  const existing = _cachedTracks.get(trackId);
+  if (existing) {
+    return existing;
+  }
+
+  const track = createTrack(trackId);
+  _cachedTracks.set(trackId, track);
+  return track;
+}
+
+export function listTrackIds(): TrackId[] {
+  return ["track1", "neon-circuit"];
 }

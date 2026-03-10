@@ -30,7 +30,7 @@ import {
 interface UseRaceRoomOptions {
   roomId: string;
   playerName: string;
-  carVariant: number;
+  carId: string;
   store: RaceStore;
 }
 
@@ -43,13 +43,13 @@ interface RaceRoomActions {
 }
 
 export function useRaceRoom(opts: UseRaceRoomOptions): RaceRoomControls {
-  const { roomId, playerName, carVariant, store } = opts;
+  const { roomId, playerName, carId, store } = opts;
   const { useActor } = getRivetContext<typeof registry>();
 
   const room = useActor(() => ({
     name: "raceRoom" as const,
     key: [roomId],
-    params: { playerName, carVariant },
+    params: { playerName, carId },
   })) as ReturnType<typeof useActor> & RaceRoomActions;
 
   // -------------------------------------------------------------------------

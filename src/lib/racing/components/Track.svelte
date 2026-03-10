@@ -17,19 +17,23 @@
 		Float32BufferAttribute,
 		DoubleSide,
 		FrontSide,
-		Vector3,
-		ShaderMaterial,
 	} from "three";
-	import { getTrack } from "../track.js";
+	import { getRaceStore } from "$lib/racing/context.js";
+	import Track1Model from "./Track1Model.svelte";
+	import { DEFAULT_TRACK_ID, getTrack } from "../track.js";
 	import { TRACK_WALL_HEIGHT } from "../types.js";
 
 	// -----------------------------------------------------------------------
 	// Track data (generated once, cached)
 	// -----------------------------------------------------------------------
 
-	const track = getTrack();
+	const store = getRaceStore();
+	const track = getTrack(store.trackId || DEFAULT_TRACK_ID);
 	const { segments, boostZones } = track;
 	const segCount = segments.length;
+	const isProceduralTrack = track.visual.kind === "procedural";
+	const gltfVisual = track.visual.kind === "gltf" ? track.visual : null;
+	const overlayScale = isProceduralTrack ? 1 : 5;
 
 	// -----------------------------------------------------------------------
 	// Geometry references — built on mount, disposed on destroy
@@ -275,24 +279,27 @@
 	// -----------------------------------------------------------------------
 
 	onMount(() => {
-		// -- Road surface --
 		const lefts = segments.map((s) => s.left);
 		const rights = segments.map((s) => s.right);
-		roadGeo = buildQuadStrip(lefts, rights, true);
 
-		// -- Wall strips (now using actual Y values from edges) --
-		const leftNormals = segments.map((s) => ({ x: -s.normal.x, z: -s.normal.z }));
-		leftWallGeo = buildWallStrip(lefts, TRACK_WALL_HEIGHT, leftNormals);
+		if (isProceduralTrack) {
+			// -- Road surface --
+			roadGeo = buildQuadStrip(lefts, rights, true);
 
-		const rightNormals = segments.map((s) => ({ x: s.normal.x, z: s.normal.z }));
-		rightWallGeo = buildWallStrip(rights, TRACK_WALL_HEIGHT, rightNormals);
+			// -- Wall strips (now using actual Y values from edges) --
+			const leftNormals = segments.map((s) => ({ x: -s.normal.x, z: -s.normal.z }));
+			leftWallGeo = buildWallStrip(lefts, TRACK_WALL_HEIGHT, leftNormals);
 
-		// -- Wall-top LED strips --
-		leftLedGeo = buildLedStrip(lefts, leftNormals, TRACK_WALL_HEIGHT, 0.08);
-		rightLedGeo = buildLedStrip(rights, rightNormals, TRACK_WALL_HEIGHT, 0.08);
+			const rightNormals = segments.map((s) => ({ x: s.normal.x, z: s.normal.z }));
+			rightWallGeo = buildWallStrip(rights, TRACK_WALL_HEIGHT, rightNormals);
+
+			// -- Wall-top LED strips --
+			leftLedGeo = buildLedStrip(lefts, leftNormals, TRACK_WALL_HEIGHT, 0.08);
+			rightLedGeo = buildLedStrip(rights, rightNormals, TRACK_WALL_HEIGHT, 0.08);
+		}
 
 		// -- Boost pad geometry --
-		const BOOST_Y = 0.03;
+		const BOOST_Y = 0.03 * overlayScale;
 		const newBoostGeos: BufferGeometry[] = [];
 		const newChevrons: ChevronData[] = [];
 
@@ -332,7 +339,7 @@
 				const s = segments[idx];
 				chevronPositions.push({
 					x: s.center.x,
-					y: s.center.y + 0.06,
+					y: s.center.y + 0.06 * overlayScale,
 					z: s.center.z,
 				});
 			}
@@ -347,20 +354,21 @@
 
 		// -- Track-side scenery --
 		const trackScenery = (track as any).scenery;
-		if (Array.isArray(trackScenery)) {
+		if (isProceduralTrack && Array.isArray(trackScenery)) {
 			sceneryItems = trackScenery;
 		}
 
 		// -- Start/finish line --
 		const s0 = segments[0];
-		const lineWidth = 0.5;
+		const startLineYOffset = 0.02 * overlayScale;
+		const lineWidth = 0.5 * overlayScale;
 		const startLineVerts = new Float32Array([
-			s0.left.x, s0.left.y + 0.02, s0.left.z,
-			s0.right.x, s0.right.y + 0.02, s0.right.z,
-			s0.left.x + s0.forward.x * lineWidth, s0.left.y + 0.02, s0.left.z + s0.forward.z * lineWidth,
-			s0.left.x + s0.forward.x * lineWidth, s0.left.y + 0.02, s0.left.z + s0.forward.z * lineWidth,
-			s0.right.x, s0.right.y + 0.02, s0.right.z,
-			s0.right.x + s0.forward.x * lineWidth, s0.right.y + 0.02, s0.right.z + s0.forward.z * lineWidth,
+			s0.left.x, s0.left.y + startLineYOffset, s0.left.z,
+			s0.right.x, s0.right.y + startLineYOffset, s0.right.z,
+			s0.left.x + s0.forward.x * lineWidth, s0.left.y + startLineYOffset, s0.left.z + s0.forward.z * lineWidth,
+			s0.left.x + s0.forward.x * lineWidth, s0.left.y + startLineYOffset, s0.left.z + s0.forward.z * lineWidth,
+			s0.right.x, s0.right.y + startLineYOffset, s0.right.z,
+			s0.right.x + s0.forward.x * lineWidth, s0.right.y + startLineYOffset, s0.right.z + s0.forward.z * lineWidth,
 		]);
 		const startLineNorms = new Float32Array([
 			0, 1, 0, 0, 1, 0, 0, 1, 0,
@@ -372,59 +380,61 @@
 		startLineGeo = slGeo;
 
 		// -- Center line dashes --
-		const DASH_LENGTH = 3;
-		const GAP_LENGTH = 3;
-		const DASH_HALF_WIDTH = 0.08;
-		const DASH_Y_OFFSET = 0.015;
-		const dashPositions: number[] = [];
-		const dashNormals: number[] = [];
+		if (isProceduralTrack) {
+			const DASH_LENGTH = 3;
+			const GAP_LENGTH = 3;
+			const DASH_HALF_WIDTH = 0.08 * overlayScale;
+			const DASH_Y_OFFSET = 0.015 * overlayScale;
+			const dashPositions: number[] = [];
+			const dashNormals: number[] = [];
 
-		let segIdx = 0;
-		while (segIdx < segCount) {
-			const dashEnd = Math.min(segIdx + DASH_LENGTH, segCount);
-			for (let i = segIdx; i < dashEnd - 1; i++) {
-				const curr = segments[i];
-				const next = segments[(i + 1) % segCount];
+			let segIdx = 0;
+			while (segIdx < segCount) {
+				const dashEnd = Math.min(segIdx + DASH_LENGTH, segCount);
+				for (let i = segIdx; i < dashEnd - 1; i++) {
+					const curr = segments[i];
+					const next = segments[(i + 1) % segCount];
 
-				const cl_x = curr.center.x - curr.normal.x * DASH_HALF_WIDTH;
-				const cl_y = curr.center.y + DASH_Y_OFFSET;
-				const cl_z = curr.center.z - curr.normal.z * DASH_HALF_WIDTH;
-				const cr_x = curr.center.x + curr.normal.x * DASH_HALF_WIDTH;
-				const cr_y = curr.center.y + DASH_Y_OFFSET;
-				const cr_z = curr.center.z + curr.normal.z * DASH_HALF_WIDTH;
+					const cl_x = curr.center.x - curr.normal.x * DASH_HALF_WIDTH;
+					const cl_y = curr.center.y + DASH_Y_OFFSET;
+					const cl_z = curr.center.z - curr.normal.z * DASH_HALF_WIDTH;
+					const cr_x = curr.center.x + curr.normal.x * DASH_HALF_WIDTH;
+					const cr_y = curr.center.y + DASH_Y_OFFSET;
+					const cr_z = curr.center.z + curr.normal.z * DASH_HALF_WIDTH;
 
-				const nl_x = next.center.x - next.normal.x * DASH_HALF_WIDTH;
-				const nl_y = next.center.y + DASH_Y_OFFSET;
-				const nl_z = next.center.z - next.normal.z * DASH_HALF_WIDTH;
-				const nr_x = next.center.x + next.normal.x * DASH_HALF_WIDTH;
-				const nr_y = next.center.y + DASH_Y_OFFSET;
-				const nr_z = next.center.z + next.normal.z * DASH_HALF_WIDTH;
+					const nl_x = next.center.x - next.normal.x * DASH_HALF_WIDTH;
+					const nl_y = next.center.y + DASH_Y_OFFSET;
+					const nl_z = next.center.z - next.normal.z * DASH_HALF_WIDTH;
+					const nr_x = next.center.x + next.normal.x * DASH_HALF_WIDTH;
+					const nr_y = next.center.y + DASH_Y_OFFSET;
+					const nr_z = next.center.z + next.normal.z * DASH_HALF_WIDTH;
 
-				dashPositions.push(cl_x, cl_y, cl_z);
-				dashPositions.push(cr_x, cr_y, cr_z);
-				dashPositions.push(nl_x, nl_y, nl_z);
-				dashPositions.push(nl_x, nl_y, nl_z);
-				dashPositions.push(cr_x, cr_y, cr_z);
-				dashPositions.push(nr_x, nr_y, nr_z);
+					dashPositions.push(cl_x, cl_y, cl_z);
+					dashPositions.push(cr_x, cr_y, cr_z);
+					dashPositions.push(nl_x, nl_y, nl_z);
+					dashPositions.push(nl_x, nl_y, nl_z);
+					dashPositions.push(cr_x, cr_y, cr_z);
+					dashPositions.push(nr_x, nr_y, nr_z);
 
-				for (let n = 0; n < 6; n++) {
-					dashNormals.push(0, 1, 0);
+					for (let n = 0; n < 6; n++) {
+						dashNormals.push(0, 1, 0);
+					}
 				}
+				segIdx += DASH_LENGTH + GAP_LENGTH;
 			}
-			segIdx += DASH_LENGTH + GAP_LENGTH;
-		}
 
-		if (dashPositions.length > 0) {
-			const cdGeo = new BufferGeometry();
-			cdGeo.setAttribute(
-				"position",
-				new Float32BufferAttribute(new Float32Array(dashPositions), 3),
-			);
-			cdGeo.setAttribute(
-				"normal",
-				new Float32BufferAttribute(new Float32Array(dashNormals), 3),
-			);
-			centerDashGeo = cdGeo;
+			if (dashPositions.length > 0) {
+				const cdGeo = new BufferGeometry();
+				cdGeo.setAttribute(
+					"position",
+					new Float32BufferAttribute(new Float32Array(dashPositions), 3),
+				);
+				cdGeo.setAttribute(
+					"normal",
+					new Float32BufferAttribute(new Float32Array(dashNormals), 3),
+				);
+				centerDashGeo = cdGeo;
+			}
 		}
 	});
 
@@ -451,10 +461,10 @@
 				// Scroll along the forward direction
 				const basePos = chev.positions[ai];
 				if (!basePos) continue;
-				const spanDist = 1.5; // distance the chevron scrolls
+				const spanDist = 1.5 * overlayScale; // distance the chevron scrolls
 				arrow.position.set(
 					basePos.x + chev.forward.x * phase * spanDist,
-					basePos.y + 0.05,
+					basePos.y + 0.05 * overlayScale,
 					basePos.z + chev.forward.z * phase * spanDist,
 				);
 				// Fade: bright in center, fade at edges
@@ -485,42 +495,66 @@
 	});
 </script>
 
-<!-- ===================================================================== -->
-<!-- Ground plane — large grass surface surrounding the track              -->
-<!-- ===================================================================== -->
-<T.Mesh rotation.x={-Math.PI / 2} position.y={-10} receiveShadow>
-	<T.PlaneGeometry args={[2000, 2000]} />
-	<T.MeshStandardMaterial
-		color="#2d5a1e"
-		roughness={0.95}
-		metalness={0.0}
-	/>
-</T.Mesh>
-<!-- Slightly lighter grass patches for texture variation -->
-<T.Mesh rotation.x={-Math.PI / 2} position={[-120, -9.98, 80]}>
-	<T.CircleGeometry args={[80, 32]} />
-	<T.MeshStandardMaterial
-		color="#3a6b2a"
-		roughness={0.95}
-		metalness={0.0}
-	/>
-</T.Mesh>
-<T.Mesh rotation.x={-Math.PI / 2} position={[100, -9.98, -60]}>
-	<T.CircleGeometry args={[70, 32]} />
-	<T.MeshStandardMaterial
-		color="#336625"
-		roughness={0.95}
-		metalness={0.0}
-	/>
-</T.Mesh>
-<T.Mesh rotation.x={-Math.PI / 2} position={[-40, -9.98, -140]}>
-	<T.CircleGeometry args={[100, 32]} />
-	<T.MeshStandardMaterial
-		color="#3a6b2a"
-		roughness={0.95}
-		metalness={0.0}
-	/>
-</T.Mesh>
+{#if isProceduralTrack}
+	<!-- ===================================================================== -->
+	<!-- Ground plane — large grass surface surrounding the track              -->
+	<!-- ===================================================================== -->
+	<T.Mesh rotation.x={-Math.PI / 2} position.y={-10} receiveShadow>
+		<T.PlaneGeometry args={[2000, 2000]} />
+		<T.MeshStandardMaterial
+			color="#2d5a1e"
+			roughness={0.95}
+			metalness={0.0}
+		/>
+	</T.Mesh>
+	<!-- Slightly lighter grass patches for texture variation -->
+	<T.Mesh rotation.x={-Math.PI / 2} position={[-120, -9.98, 80]}>
+		<T.CircleGeometry args={[80, 32]} />
+		<T.MeshStandardMaterial
+			color="#3a6b2a"
+			roughness={0.95}
+			metalness={0.0}
+		/>
+	</T.Mesh>
+	<T.Mesh rotation.x={-Math.PI / 2} position={[100, -9.98, -60]}>
+		<T.CircleGeometry args={[70, 32]} />
+		<T.MeshStandardMaterial
+			color="#336625"
+			roughness={0.95}
+			metalness={0.0}
+		/>
+	</T.Mesh>
+	<T.Mesh rotation.x={-Math.PI / 2} position={[-40, -9.98, -140]}>
+		<T.CircleGeometry args={[100, 32]} />
+		<T.MeshStandardMaterial
+			color="#3a6b2a"
+			roughness={0.95}
+			metalness={0.0}
+		/>
+	</T.Mesh>
+{/if}
+
+{#if gltfVisual}
+	<T.Group
+		position={[
+			gltfVisual.transform.position.x,
+			gltfVisual.transform.position.y,
+			gltfVisual.transform.position.z,
+		]}
+		rotation={[
+			gltfVisual.transform.rotation.x,
+			gltfVisual.transform.rotation.y,
+			gltfVisual.transform.rotation.z,
+		]}
+		scale={[
+			gltfVisual.transform.scale.x,
+			gltfVisual.transform.scale.y,
+			gltfVisual.transform.scale.z,
+		]}
+	>
+		<Track1Model />
+	</T.Group>
+{/if}
 
 <!-- ===================================================================== -->
 <!-- Road surface — dark asphalt                                           -->
@@ -626,10 +660,10 @@
 		oncreate={(ref) => { chevronGroupRefs[ci] = ref; }}
 	>
 		{#each chev.positions as pos, ai}
-			<T.Group position={[pos.x, pos.y + 0.05, pos.z]}>
+			<T.Group position={[pos.x, pos.y + 0.05 * overlayScale, pos.z]}>
 				<!-- Chevron arrow shape: flat triangle pointing forward -->
 				<T.Mesh rotation.x={-Math.PI / 2}>
-					<T.ConeGeometry args={[0.4, 0.8, 3]} />
+					<T.ConeGeometry args={[0.4 * overlayScale, 0.8 * overlayScale, 3]} />
 					<T.MeshBasicMaterial
 						color="#00FFAA"
 						transparent
@@ -679,11 +713,13 @@
 <!-- ===================================================================== -->
 {#each track.checkpoints as cp, i}
 	{@const seg = segments[cp.segmentIndex]}
+	{@const checkpointHeight = TRACK_WALL_HEIGHT * overlayScale}
+	{@const checkpointRadius = 0.06 * overlayScale}
 	<!-- Left post -->
 	<T.Mesh
-		position={[seg.left.x, seg.left.y + TRACK_WALL_HEIGHT * 0.5, seg.left.z]}
+		position={[seg.left.x, seg.left.y + checkpointHeight * 0.5, seg.left.z]}
 	>
-		<T.CylinderGeometry args={[0.06, 0.06, TRACK_WALL_HEIGHT, 6]} />
+		<T.CylinderGeometry args={[checkpointRadius, checkpointRadius, checkpointHeight, 6]} />
 		<T.MeshStandardMaterial
 			color="#0A9EF5"
 			emissive="#0A9EF5"
@@ -695,9 +731,9 @@
 	</T.Mesh>
 	<!-- Right post -->
 	<T.Mesh
-		position={[seg.right.x, seg.right.y + TRACK_WALL_HEIGHT * 0.5, seg.right.z]}
+		position={[seg.right.x, seg.right.y + checkpointHeight * 0.5, seg.right.z]}
 	>
-		<T.CylinderGeometry args={[0.06, 0.06, TRACK_WALL_HEIGHT, 6]} />
+		<T.CylinderGeometry args={[checkpointRadius, checkpointRadius, checkpointHeight, 6]} />
 		<T.MeshStandardMaterial
 			color="#0A9EF5"
 			emissive="#0A9EF5"

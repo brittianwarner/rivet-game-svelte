@@ -6,6 +6,7 @@
 -->
 <script lang="ts">
   import { Canvas, T } from "@threlte/core";
+  import { WebGLRenderer } from "three";
   import { Sky } from "@threlte/extras";
   import Track from "./Track.svelte";
   import Kart from "./Kart.svelte";
@@ -14,13 +15,19 @@
   import ChaseCam from "./ChaseCam.svelte";
   import RaceInput from "./RaceInput.svelte";
   import { getRaceStore } from "../context.js";
-  import { getTrack } from "../track.js";
 
   const store = getRaceStore();
-  const track = getTrack();
+
+  function createRenderer(canvas: HTMLCanvasElement) {
+    return new WebGLRenderer({
+      canvas,
+      antialias: true,
+      logarithmicDepthBuffer: true,
+    });
+  }
 </script>
 
-<Canvas>
+<Canvas {createRenderer}>
   <!-- Camera -->
   <ChaseCam />
 
@@ -36,12 +43,14 @@
   <T.DirectionalLight
     color={0xffeedd}
     intensity={1.2}
-    position={[30, 50, 20]}
+    position={[150, 250, 100]}
   />
   <T.AmbientLight color={0x334466} intensity={0.5} />
 
   <!-- Track -->
-  <Track />
+  {#key store.trackId}
+    <Track />
+  {/key}
 
   <!-- Karts (with slipstream wind lines handled inside Kart.svelte) -->
   {#each Object.keys(store.karts) as kartId (kartId)}
@@ -63,7 +72,7 @@
 
   <!-- Hazards (bananas) — upgraded with sphere + ground ring + point light -->
   {#each store.hazards as hazard (hazard.id)}
-    <T.Group position={[hazard.position.x, 0.3, hazard.position.z]}>
+    <T.Group position={[hazard.position.x, hazard.position.y, hazard.position.z]}>
       <!-- Banana sphere -->
       <T.Mesh castShadow>
         <T.SphereGeometry args={[0.3, 12, 8]} />

@@ -7,7 +7,8 @@
     "dev": "vite dev --port 5175",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "generate:generic-cars-model": "node scripts/generate-generic-cars-model.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.9",

@@ -2,7 +2,12 @@
   import { goto } from "$app/navigation";
   import { getRivetContext } from "@rivetkit/svelte";
   import type { registry } from "$lib/actors/registry";
-  import { RACE_MAX_PLAYERS, CAR_VARIANT_COLORS } from "$lib/racing/types";
+  import { RACE_MAX_PLAYERS } from "$lib/racing/types";
+  import {
+    CURATED_RACE_CARS,
+    DEFAULT_RACE_CAR_ID,
+    type RaceCarId,
+  } from "$lib/racing/car-catalog";
   import type { RoomSummary } from "$lib/game/types";
 
   interface LobbyActions {
@@ -20,7 +25,7 @@
   let playerName = $state(
     `Racer_${Math.random().toString(36).slice(2, 5)}`,
   );
-  let selectedCar = $state(0);
+  let selectedCarId = $state<RaceCarId>(DEFAULT_RACE_CAR_ID);
   let isCreating = $state(false);
   let linkCopiedToast = $state(false);
 
@@ -52,7 +57,9 @@
       const result = await lobby.createRoom(name, "race");
       if (result.success && result.roomId) {
         newRoomName = "";
-        const url = `${window.location.origin}/race/play/${result.roomId}?name=${encodeURIComponent(playerName)}&car=${selectedCar}`;
+        const url =
+          `${window.location.origin}/race/play/${result.roomId}` +
+          `?name=${encodeURIComponent(playerName)}&carId=${selectedCarId}`;
         // Copy link to clipboard
         try {
           await navigator.clipboard.writeText(url);
@@ -61,7 +68,10 @@
         } catch {
           // Clipboard not available, proceed anyway
         }
-        goto(`/race/play/${result.roomId}?name=${encodeURIComponent(playerName)}&car=${selectedCar}`);
+        goto(
+          `/race/play/${result.roomId}` +
+            `?name=${encodeURIComponent(playerName)}&carId=${selectedCarId}`,
+        );
       }
     } finally {
       isCreating = false;
@@ -69,7 +79,10 @@
   }
 
   function joinRoom(roomId: string): void {
-    goto(`/race/play/${roomId}?name=${encodeURIComponent(playerName)}&car=${selectedCar}`);
+    goto(
+      `/race/play/${roomId}` +
+        `?name=${encodeURIComponent(playerName)}&carId=${selectedCarId}`,
+    );
   }
 
   async function quickMatch(): Promise<void> {
@@ -77,7 +90,10 @@
     try {
       const result = await lobby.findOrCreateRoom("race");
       if (result.success && result.roomId) {
-        goto(`/race/play/${result.roomId}?name=${encodeURIComponent(playerName)}&car=${selectedCar}`);
+        goto(
+          `/race/play/${result.roomId}` +
+            `?name=${encodeURIComponent(playerName)}&carId=${selectedCarId}`,
+        );
       }
     } finally {
       isQuickMatching = false;
@@ -132,18 +148,22 @@
       >
         Select Car
       </div>
-      <div class="flex gap-3">
-        {#each CAR_VARIANT_COLORS as color, i}
+      <div class="grid grid-cols-2 gap-3">
+        {#each CURATED_RACE_CARS as car}
           <button
-            onclick={() => (selectedCar = i)}
-            class="flex-1 rounded-lg border-2 p-3 text-center text-sm font-semibold transition-all"
-            style="
-              background: {selectedCar === i ? color + '22' : 'var(--color-surface)'};
-              border-color: {selectedCar === i ? color : 'var(--color-border)'};
-              color: {color}
-            "
+            onclick={() => (selectedCarId = car.id)}
+            class="rounded-lg border-2 px-4 py-3 text-left text-sm transition-all"
+            style={
+              selectedCarId === car.id
+                ? "background: color-mix(in srgb, var(--color-accent) 16%, var(--color-surface));" +
+                  "border-color: var(--color-accent); color: var(--color-text);"
+                : "background: var(--color-surface); border-color: var(--color-border); color: var(--color-text);"
+            }
           >
-            Car {i + 1}
+            <div class="font-semibold">{car.name}</div>
+            <div class="mt-1 text-xs" style="color: var(--color-text-muted)">
+              {car.tagline}
+            </div>
           </button>
         {/each}
       </div>

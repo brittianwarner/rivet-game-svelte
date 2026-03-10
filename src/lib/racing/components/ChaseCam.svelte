@@ -19,9 +19,9 @@
 
 	const BASE_FOV = 65;
 	const MAX_FOV_BOOST = 15;
-	const CAMERA_BEHIND = 12;
-	const CAMERA_ABOVE = 6;
-	const LOOK_AHEAD = 5;
+	const CAMERA_BEHIND = 30;
+	const CAMERA_ABOVE = 14;
+	const LOOK_AHEAD = 15;
 	const LERP_BASE = 0.08;
 
 	// FOV enhancement constants
@@ -32,8 +32,8 @@
 	const MUSHROOM_FOV_DECAY = 400; // ms to decay mushroom spike
 
 	// Default overview position when no local kart exists
-	const DEFAULT_POS = new Vector3(0, 80, 120);
-	const DEFAULT_LOOK = new Vector3(0, 0, 50);
+	const DEFAULT_POS = new Vector3(0, 200, 400);
+	const DEFAULT_LOOK = new Vector3(0, 0, 200);
 
 	// Reusable Vector3s to avoid per-frame allocation
 	const _offset = new Vector3();
@@ -171,7 +171,7 @@
 <T.PerspectiveCamera
 	makeDefault
 	fov={BASE_FOV}
-	near={0.1}
-	far={2000}
+	near={1}
+	far={15000}
 	{oncreate}
 />

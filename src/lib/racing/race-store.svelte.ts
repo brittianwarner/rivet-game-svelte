@@ -25,6 +25,7 @@ import {
   type RaceFinishedEvent,
   type RacePhaseChangedEvent,
   type RaceRoomState,
+  type TrackId,
 } from "./types.js";
 
 function defaultDriftState(): DriftState {
@@ -47,6 +48,7 @@ export class RaceStore {
   connectionError = $state<string | null>(null);
   roomId = $state<string>("");
   roomName = $state<string>("");
+  trackId = $state<TrackId>("track1");
   finishedCount = $state(0);
 
   // Hit flash state (client-only visual)
@@ -142,6 +144,7 @@ export class RaceStore {
     const { state, playerId } = result;
     this.roomId = state.id;
     this.roomName = state.name;
+    this.trackId = state.trackId;
     this.phase = state.phase;
     this.localPlayerId = playerId;
     this.raceTimer = state.raceTimer;
@@ -195,6 +198,10 @@ export class RaceStore {
       kart.checkpoint = data.checkpoint;
       kart.boostTimer = data.boostTimer;
       kart.boostSpeed = data.boostSpeed;
+      kart.slipAngle = data.slipAngle ?? 0;
+      kart.flowMeter = data.flowMeter ?? 0;
+      kart.surface = data.surface ?? "asphalt";
+      kart.loadFactor = data.loadFactor ?? 1;
     }
 
     // Projectiles — replace
@@ -453,6 +460,7 @@ export class RaceStore {
     this.connectionError = null;
     this.roomId = "";
     this.roomName = "";
+    this.trackId = "track1";
     this.finishedCount = 0;
     this.lastHitKartId = null;
     this.lastHitTime = 0;

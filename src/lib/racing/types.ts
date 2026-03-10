@@ -1,3 +1,9 @@
+import {
+  CURATED_RACE_CARS,
+  PLAYER_ACCENT_COLORS,
+  type RaceCarId,
+} from "./car-catalog.js";
+
 // ---------------------------------------------------------------------------
 // Vec3 helpers — shared between server actor and client store
 // ---------------------------------------------------------------------------
@@ -116,6 +122,24 @@ export interface SceneryObject {
   depth?: number;
 }
 
+export type TrackId = "track1" | "neon-circuit";
+
+export interface TrackVisualTransform {
+  position: Vec3;
+  rotation: Vec3;
+  scale: Vec3;
+}
+
+export type TrackVisualDefinition =
+  | {
+      kind: "procedural";
+    }
+  | {
+      kind: "gltf";
+      modelPath: string;
+      transform: TrackVisualTransform;
+    };
+
 export interface TrackDefinition {
   points: TrackPoint[];
   segments: TrackSegment[];
@@ -127,6 +151,7 @@ export interface TrackDefinition {
   startHeading: number;
   shortcuts: ShortcutZone[];
   scenery: SceneryObject[];
+  visual: TrackVisualDefinition;
 }
 
 // ---------------------------------------------------------------------------
@@ -173,7 +198,8 @@ export interface RaceStats {
 export interface KartState {
   id: string;
   name: string;
-  carVariant: number; // 0-3
+  carId: RaceCarId;
+  accentIndex: number; // stable player accent slot assigned on join
   position: Vec3;
   heading: number; // radians
   speed: number;
@@ -187,13 +213,17 @@ export interface KartState {
   statusTimer: number; // ms remaining on status effect
   raceProgress: number; // used for position ranking
   finishTime: number | null; // ms from race start
-  finishPosition: number | null; // 1-4
+  finishPosition: number | null; // 1-maxPlayers
   boostTimer: number; // ms remaining on any boost
   boostSpeed: number; // additional speed from boost
   slipstreamActive: boolean;
   slipstreamTicks: number;
   hitstopTicks: number;
   rocketStartTier: RocketStartTier;
+  slipAngle: number;
+  flowMeter: number;
+  surface: SurfaceType;
+  loadFactor: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -256,7 +286,7 @@ export interface RaceRoomState {
   lapCount: number;
   raceTimer: number; // ms elapsed since race start
   maxPlayers: number;
-  trackId: string;
+  trackId: TrackId;
   createdAt: number;
   phaseStartedAt: number;
   positions: string[]; // ordered player IDs (1st first)
@@ -288,6 +318,10 @@ export interface RaceSnapshot {
       boostTimer: number;
       boostSpeed: number;
       slipstreamActive: boolean;
+      slipAngle: number;
+      flowMeter: number;
+      surface: SurfaceType;
+      loadFactor: number;
     }
   >;
   projectiles: ProjectileState[];
@@ -411,16 +445,16 @@ export const NUM_CHECKPOINTS = 8;
 // Constants — Kart physics
 // ---------------------------------------------------------------------------
 
-export const KART_MAX_SPEED = 0.6; // units/tick (dt=1 at 60Hz → 36 u/s)
-export const KART_ACCELERATION = 0.018; // per tick
-export const KART_BRAKE_FORCE = 0.04; // per tick
-export const KART_TURN_RATE = 0.042; // radians per tick at zero speed
-export const KART_DRAG = 0.008; // per tick drag coefficient
-export const KART_RADIUS = 0.6;
+export const KART_MAX_SPEED = 3.0;
+export const KART_ACCELERATION = 0.09;
+export const KART_BRAKE_FORCE = 0.2;
+export const KART_TURN_RATE = 0.038;
+export const KART_DRAG = 0.008;
+export const KART_RADIUS = 3.0;
 export const KART_MASS = 1.0;
-export const KART_REVERSE_MAX = 0.15;
-export const KART_REVERSE_ACCEL = 0.01;
-export const MIN_DRIFT_SPEED = 0.2;
+export const KART_REVERSE_MAX = 0.75;
+export const KART_REVERSE_ACCEL = 0.05;
+export const MIN_DRIFT_SPEED = 1.0;
 
 // ---------------------------------------------------------------------------
 // Constants — Drift
@@ -429,7 +463,7 @@ export const MIN_DRIFT_SPEED = 0.2;
 export const DRIFT_TURN_MULTIPLIER = 1.4;
 export const DRIFT_COUNTER_STEER = 0.6;
 export const DRIFT_CHARGE_THRESHOLDS: [number, number, number] = [60, 120, 180];
-export const DRIFT_BOOST_SPEEDS: [number, number, number] = [0.08, 0.14, 0.22];
+export const DRIFT_BOOST_SPEEDS: [number, number, number] = [0.4, 0.7, 1.1];
 export const DRIFT_BOOST_DURATIONS: [number, number, number] = [500, 800, 1200];
 export const DRIFT_CHARGE_COLORS = ["#3399FF", "#FF8800", "#CC44FF"] as const;
 
@@ -437,16 +471,16 @@ export const DRIFT_CHARGE_COLORS = ["#3399FF", "#FF8800", "#CC44FF"] as const;
 // Constants — Items
 // ---------------------------------------------------------------------------
 
-export const MUSHROOM_BOOST_SPEED = 0.25;
+export const MUSHROOM_BOOST_SPEED = 1.25;
 export const MUSHROOM_BOOST_DURATION = 1500;
 export const STAR_DURATION = 8000;
-export const STAR_SPEED_BONUS = 0.1;
+export const STAR_SPEED_BONUS = 0.5;
 export const LIGHTNING_SHRINK_DURATION = 5000;
 export const SHRUNK_SPEED_PENALTY = 0.6;
-export const SHELL_SPEED = 0.8;
+export const SHELL_SPEED = 4.0;
 export const GREEN_SHELL_MAX_BOUNCES = 5;
-export const SHELL_RADIUS = 0.3;
-export const BANANA_RADIUS = 0.3;
+export const SHELL_RADIUS = 1.5;
+export const BANANA_RADIUS = 1.5;
 export const SPIN_DURATION = 1500;
 export const ITEM_BOX_RESPAWN_TIME = 10000;
 export const PROJECTILE_MAX_AGE = 10000;
@@ -455,16 +489,16 @@ export const PROJECTILE_MAX_AGE = 10000;
 // Constants — Boost pads
 // ---------------------------------------------------------------------------
 
-export const BOOST_PAD_SPEED = 0.2;
+export const BOOST_PAD_SPEED = 1.0;
 export const BOOST_PAD_DURATION = 800;
 
 // ---------------------------------------------------------------------------
 // Constants — Off-road
 // ---------------------------------------------------------------------------
 
-export const OFF_ROAD_SPEED_MULT = 0.5;
-export const OFF_ROAD_BOUNDARY = 1.2; // beyond road width * this = off-road
-export const OUT_OF_BOUNDS_BOUNDARY = 2.0; // beyond road width * this = respawn
+export const OFF_ROAD_SPEED_MULT = 0.7;
+export const OFF_ROAD_BOUNDARY = 2.0;
+export const OUT_OF_BOUNDS_BOUNDARY = 6.0;
 
 // ---------------------------------------------------------------------------
 // Constants — Race rules
@@ -475,25 +509,17 @@ export const RACE_LAP_COUNT = 3;
 export const RACE_TIME_LIMIT = 300000; // 5 minutes max
 export const PRE_RACE_COUNTDOWN = 3000;
 export const RACE_FINISH_DISPLAY = 10000;
-export const KART_COLLISION_PUSH = 0.15;
+export const KART_COLLISION_PUSH = 0.75;
 
 // ---------------------------------------------------------------------------
-// Constants — Car variants
+// Constants — Car selection and player accents
 // ---------------------------------------------------------------------------
 
-export const CAR_VARIANT_NAMES = [
-  "RacingCar",
-  "RacingCar1",
-  "RacingCar2",
-  "RacingCar3",
-] as const;
+export const RACE_CAR_IDS = CURATED_RACE_CARS.map((car) => car.id);
+export const RACE_CAR_NAMES = CURATED_RACE_CARS.map((car) => car.name);
 
-export const CAR_VARIANT_COLORS = [
-  "#FF4444", // Red
-  "#44AAFF", // Blue
-  "#44FF88", // Green
-  "#FFAA44", // Orange
-] as const;
+// Legacy alias kept so older code paths or shared docs do not silently drift.
+export const CAR_VARIANT_COLORS = PLAYER_ACCENT_COLORS;
 
 // ---------------------------------------------------------------------------
 // Constants — Timing
@@ -515,14 +541,14 @@ export const MAX_RACE_ROOM_NAME_LEN = 40;
 // ---------------------------------------------------------------------------
 
 export const ROCKET_START_WINDOW = 6;
-export const ROCKET_START_PERFECT_SPEED = 0.30;
+export const ROCKET_START_PERFECT_SPEED = 1.5;
 export const ROCKET_START_PERFECT_DURATION = 600;
-export const ROCKET_START_GOOD_SPEED = 0.18;
+export const ROCKET_START_GOOD_SPEED = 0.9;
 export const ROCKET_START_GOOD_DURATION = 400;
-export const ROCKET_START_OK_SPEED = 0.08;
+export const ROCKET_START_OK_SPEED = 0.4;
 export const ROCKET_START_OK_DURATION = 250;
 export const ROCKET_START_STALL_DURATION = 800;
-export const ROCKET_START_STALL_MAX_SPEED = 0.1;
+export const ROCKET_START_STALL_MAX_SPEED = 0.5;
 
 // ---------------------------------------------------------------------------
 // Constants — Hitstop
@@ -535,9 +561,9 @@ export const HITSTOP_FRAMES = 3;
 // ---------------------------------------------------------------------------
 
 export const SLIPSTREAM_CONE_ANGLE = 0.25;
-export const SLIPSTREAM_CONE_LENGTH = 3.5;
+export const SLIPSTREAM_CONE_LENGTH = 17.5;
 export const SLIPSTREAM_CHARGE_TICKS = 45;
-export const SLIPSTREAM_BONUS = 0.08;
+export const SLIPSTREAM_BONUS = 0.4;
 export const SLIPSTREAM_DURATION_TICKS = 90;
 export const SLIPSTREAM_DECAY_TICKS = 30;
 
@@ -567,6 +593,85 @@ export const HIT_IMMUNITY_TICKS = 90;
 // ---------------------------------------------------------------------------
 
 export const BLUE_SHELL_GAP_THRESHOLD = 0.15;
+
+// ---------------------------------------------------------------------------
+// Constants — Grip-budget / slip angle
+// ---------------------------------------------------------------------------
+
+export const SLIP_ANGLE_BUILDUP = 0.12;
+export const SLIP_ANGLE_RECOVERY = 0.08;
+export const SLIP_ANGLE_MAX = 0.35;
+export const GRIP_LOSS_AT_MAX_SLIP = 0.45;
+export const LATERAL_PUSH_STRENGTH = 0.04;
+export const DRIFT_SLIP_FLOOR = 0.15;
+
+// ---------------------------------------------------------------------------
+// Constants — Surface types
+// ---------------------------------------------------------------------------
+
+export type SurfaceType = "asphalt" | "shoulder" | "sand" | "rumble";
+
+export const SURFACE_GRIP: Record<SurfaceType, number> = {
+  asphalt: 1.0,
+  shoulder: 0.75,
+  sand: 0.5,
+  rumble: 0.85,
+};
+
+export const SURFACE_DRAG: Record<SurfaceType, number> = {
+  asphalt: 1.0,
+  shoulder: 1.4,
+  sand: 2.2,
+  rumble: 1.15,
+};
+
+export const SURFACE_DRIFT_CHARGE_MULT: Record<SurfaceType, number> = {
+  asphalt: 1.0,
+  shoulder: 0.7,
+  sand: 0.4,
+  rumble: 1.2,
+};
+
+export const DUST_CARRYOVER_TICKS = 20;
+export const DUST_CARRYOVER_GRIP_PENALTY = 0.1;
+
+// ---------------------------------------------------------------------------
+// Constants — Compression / banking physics
+// ---------------------------------------------------------------------------
+
+export const CREST_GRIP_LOSS = 0.3;
+export const COMPRESSION_GRIP_GAIN = 0.15;
+export const LANDING_SCRUB_THRESHOLD = 0.4;
+export const LANDING_SCRUB_PENALTY = 0.06;
+export const LANDING_CLEAN_BONUS = 0.03;
+export const BANKING_GRIP_BONUS = 0.12;
+
+// ---------------------------------------------------------------------------
+// Constants — Contact duel handling
+// ---------------------------------------------------------------------------
+
+export const SIDE_RUB_SCRUB_RATE = 0.015;
+export const REAR_TAP_DESTABILIZE = 0.08;
+export const WALL_SCRUB_SPEED_LOSS = 0.04;
+export const WALL_SCRUB_ANGLE_THRESHOLD = 0.5;
+export const MASS_ADVANTAGE_PUSH = 0.06;
+
+// ---------------------------------------------------------------------------
+// Constants — Flow chain / heat meter
+// ---------------------------------------------------------------------------
+
+export const FLOW_GAIN_DRIFT_RELEASE = 0.12;
+export const FLOW_GAIN_CLEAN_CORNER = 0.04;
+export const FLOW_GAIN_SLIPSTREAM = 0.02;
+export const FLOW_GAIN_BOOST_PAD = 0.06;
+export const FLOW_GAIN_ROCKET_START = 0.15;
+export const FLOW_DECAY_PER_TICK = 0.001;
+export const FLOW_DECAY_ON_HIT = 0.5;
+export const FLOW_DECAY_OFF_ROAD = 0.03;
+export const FLOW_MAX = 1.0;
+export const FLOW_SPEED_BONUS = 0.3;
+export const FLOW_TURN_BONUS = 0.08;
+export const FLOW_BOOST_EXTEND_MULT = 1.2;
 
 // ---------------------------------------------------------------------------
 // Context keys
