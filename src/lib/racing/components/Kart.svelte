@@ -123,7 +123,7 @@
 	const ROTATION_LERP_SPEED = 12;
 	const MODEL_SCALE = 0.008;
 	const MODEL_ROTATION_Y = -Math.PI / 2;
-	const WHEEL_SPIN_FACTOR = 12;
+	const WHEEL_SPIN_FACTOR = 40;
 	const MAX_STEER_ANGLE = 0.4;
 	const MAX_BODY_ROLL = 0.15;
 	const BODY_ROLL_LERP = 8;
@@ -263,11 +263,14 @@
 		inner.rotation.y = MODEL_ROTATION_Y;
 		outer.add(inner);
 
-		// Body mesh — use raw GLTF geometry positions
-		const body = new THREE.Mesh(
-			bodyMesh.geometry.clone(),
-			bodyMesh.material,
-		);
+		// Body mesh — clone material and tint with team variant color
+		const bodyMat = (bodyMesh.material as THREE.MeshStandardMaterial).clone();
+		const variantColor = CAR_VARIANT_COLORS[variant] ?? CAR_VARIANT_COLORS[0];
+		// Blend the variant color into the base material
+		bodyMat.color.lerp(new THREE.Color(variantColor), 0.35);
+		bodyMat.emissive = new THREE.Color(variantColor);
+		bodyMat.emissiveIntensity = 0.15;
+		const body = new THREE.Mesh(bodyMesh.geometry.clone(), bodyMat);
 		inner.add(body);
 
 		// Front axle tube (caño) — static, no rotation
@@ -550,12 +553,14 @@
 		currentSteer += (targetSteerAngle - currentSteer) * Math.min(1, 10 * delta);
 
 		if (wheelFLPivot) {
-			wheelFLPivot.rotation.z += wheelSpinDelta;
 			wheelFLPivot.rotation.y = currentSteer;
+			const flMesh = wheelFLPivot.children[0];
+			if (flMesh) flMesh.rotation.z += wheelSpinDelta;
 		}
 		if (wheelFRPivot) {
-			wheelFRPivot.rotation.z += wheelSpinDelta;
 			wheelFRPivot.rotation.y = currentSteer;
+			const frMesh = wheelFRPivot.children[0];
+			if (frMesh) frMesh.rotation.z += wheelSpinDelta;
 		}
 		if (wheelRearLeftPivot) {
 			wheelRearLeftPivot.rotation.z += wheelSpinDelta;
@@ -686,6 +691,47 @@
 				/>
 			</T.Mesh>
 		{/if}
+
+		<!-- Headlights (front of kart) — PointLights at nose height -->
+		<T.PointLight
+			color="#FFFFFF"
+			intensity={3}
+			distance={12}
+			decay={2}
+			position={[-0.6, 0.4, -2.5]}
+		/>
+		<T.PointLight
+			color="#FFFFFF"
+			intensity={3}
+			distance={12}
+			decay={2}
+			position={[0.6, 0.4, -2.5]}
+		/>
+
+		<!-- Taillights (rear of kart) -->
+		<T.PointLight
+			color="#FF2200"
+			intensity={2}
+			distance={4}
+			decay={2}
+			position={[-0.5, 0.4, 2.0]}
+		/>
+		<T.PointLight
+			color="#FF2200"
+			intensity={2}
+			distance={4}
+			decay={2}
+			position={[0.5, 0.4, 2.0]}
+		/>
+		<!-- Taillight glow meshes -->
+		<T.Mesh position={[-0.5, 0.4, 2.0]}>
+			<T.SphereGeometry args={[0.08, 8, 6]} />
+			<T.MeshBasicMaterial color="#FF2200" transparent opacity={0.9} />
+		</T.Mesh>
+		<T.Mesh position={[0.5, 0.4, 2.0]}>
+			<T.SphereGeometry args={[0.08, 8, 6]} />
+			<T.MeshBasicMaterial color="#FF2200" transparent opacity={0.9} />
+		</T.Mesh>
 
 		<!-- Drift sparks (rear of kart) -->
 		<DriftSparks active={driftActive} charge={driftCharge} color={kartColor} />

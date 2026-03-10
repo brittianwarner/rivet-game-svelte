@@ -29,8 +29,8 @@
 	// -----------------------------------------------------------------------
 	// Drift Sparks (existing)
 	// -----------------------------------------------------------------------
-	const SPARK_COUNT = 5;
-	const SPARK_RADIUS = 0.06;
+	const SPARK_COUNT = 8;
+	const SPARK_RADIUS = 0.09;
 	const JITTER_RANGE = 0.4;
 	const UPWARD_SPEED = 1.2;
 	const RESET_Y = 0.8;
@@ -221,7 +221,7 @@
 
 {#if visible}
 	<!-- Offset group placed at rear of kart -->
-	<T.Group position.x={0} position.y={0.1} position.z={0.7}>
+	<T.Group position.x={0} position.y={0.15} position.z={0.7}>
 		{#each sparks as spark, i}
 			<T.Mesh
 				geometry={sparkGeo}
@@ -236,8 +236,8 @@
 		<!-- Charge-colored point light -->
 		<T.PointLight
 			color={DRIFT_CHARGE_COLORS[matIndex]}
-			intensity={1 + charge}
-			distance={2.5}
+			intensity={2 + charge * 1.5}
+			distance={4}
 			decay={2}
 		/>
 	</T.Group>

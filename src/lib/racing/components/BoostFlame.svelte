@@ -25,9 +25,9 @@
 	const INNER_COLOR = "#FFAA44";
 
 	// Use $derived for geometry dimensions so they react to intensity changes
-	const coneRadius = $derived(0.15 * intensity);
-	const coneHeight = $derived(0.6 * intensity);
-	const sphereRadius = $derived(0.12 * intensity);
+	const coneRadius = $derived(0.22 * intensity);
+	const coneHeight = $derived(0.9 * intensity);
+	const sphereRadius = $derived(0.18 * intensity);
 
 	// Geometries rebuilt when intensity-derived dimensions change
 	let coneGeo: THREE.ConeGeometry | undefined;
@@ -108,7 +108,7 @@
 			<T.Mesh
 				geometry={coneGeo}
 				material={flameMat}
-				position.z={0.3}
+				position.z={0.4}
 			/>
 		{/if}
 
@@ -123,8 +123,8 @@
 		<!-- Dynamic point light -->
 		<T.PointLight
 			color={FLAME_COLOR}
-			intensity={2 * intensity}
-			distance={3}
+			intensity={4 * intensity}
+			distance={5}
 			decay={2}
 		/>
 	</T.Group>
