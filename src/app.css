@@ -2,6 +2,31 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* ---------------------------------------------------------------------------
+   Display / body typography
+   --font-heading was referenced (body { font-family: var(--font-heading) })
+   but never defined, silently falling back to the default sans. Define an
+   arcade-flavored bold display stack for race headings (no runtime network
+   fetch — pure system stack) plus a clean body stack for readable text.
+--------------------------------------------------------------------------- */
+:root {
+  /* Heavy, condensed display face for big race UI (countdown, position, GO!) */
+  --font-display:
+    "Arial Black", "Arial Narrow Bold", "Helvetica Neue", system-ui,
+    sans-serif;
+  /* Readable UI/body face */
+  --font-heading:
+    system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    sans-serif;
+}
+
+/* Apply the display face + an arcade italic skew to large race headings. */
+.font-display {
+  font-family: var(--font-display);
+  font-style: italic;
+  letter-spacing: 0.01em;
+}
+
 .dark {
   --background: oklch(0.145 0.02 260);
   --foreground: oklch(0.95 0.01 230);
@@ -51,4 +76,131 @@
     width: 100%;
     overflow: hidden;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Reduced motion.
+
+   The SettingsStore mirrors the effective reduced-motion preference onto
+   <html data-reduced-motion="true|false"> (it folds the OS
+   prefers-reduced-motion query together with the player's in-app override, so
+   forcing "On" works even when the OS query is off). These rules are the
+   DOM-level half of that switch: they neutralize CSS keyframe animations +
+   transitions for the whole document so the HUD's slams/flashes/pulses
+   (countdown pop, FINAL LAP slam, WRONG WAY strobe, slipstream pulse, item
+   roulette, speed-bar boost, lobby/toast slides, …) calm down without each
+   component having to special-case the setting. The speed-line vignette and
+   the lightning flash are already gated in script off `reducedMotionActive`;
+   these rules cover everything driven purely by CSS.
+
+   Scoped to the attribute set by the in-app setting AND mirrored from the OS
+   query, so a plain `@media (prefers-reduced-motion: reduce)` fallback below
+   still calms motion before the store hydrates / if JS is disabled.
+--------------------------------------------------------------------------- */
+html[data-reduced-motion="true"] *,
+html[data-reduced-motion="true"] *::before,
+html[data-reduced-motion="true"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  animation-delay: 0ms !important;
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+
+/* Calm the looping ambience animations specifically — these are infinite
+   strobes/pulses (not one-shot enters), so even with the blanket rule above
+   we hold them at a steady, glare-free resting frame rather than mid-flash. */
+html[data-reduced-motion="true"] .speed-line,
+html[data-reduced-motion="true"] .wrong-way-banner,
+html[data-reduced-motion="true"] .slipstream-text,
+html[data-reduced-motion="true"] .item-roulette,
+html[data-reduced-motion="true"] .speed-bar-boost {
+  animation: none !important;
+  opacity: 1 !important;
+}
+
+/* Pre-hydration / no-JS fallback: honor the OS query directly so motion is
+   already calmed before the SettingsStore mirrors its attribute. */
+@media (prefers-reduced-motion: reduce) {
+  html:not([data-reduced-motion="false"]) *,
+  html:not([data-reduced-motion="false"]) *::before,
+  html:not([data-reduced-motion="false"]) *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Portrait rotate-device prompt (race play page).
+   The .rotate-prompt markup is rendered only on touch devices, but it ships
+   with NO styling — so it would otherwise read as permanent unstyled text. It
+   must be a fixed, full-screen overlay that is HIDDEN by default (landscape +
+   desktop) and shown ONLY when a touch device is held in portrait, so it gates
+   the portrait orientation without ever covering the game in landscape.
+   --------------------------------------------------------------------------- */
+.rotate-prompt {
+  display: none;
+}
+
+/* Show only in portrait AND only on touch/coarse-pointer devices, so a desktop
+   browser resized to a portrait window never triggers it. */
+@media (orientation: portrait) and (pointer: coarse) {
+  .rotate-prompt {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+    background: #07070d;
+    /* Defensive: never intercept gameplay touches in landscape (it's hidden
+       there anyway, but this keeps it inert if ever toggled). */
+    text-align: center;
+  }
+
+  .rotate-prompt-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+    max-width: 20rem;
+    padding: 2rem 1.75rem;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 1rem;
+    background: rgba(255, 255, 255, 0.04);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  }
+
+  .rotate-icon {
+    font-size: 3.5rem;
+    line-height: 1;
+    animation: rotateHint 2s ease-in-out infinite;
+  }
+
+  .rotate-text {
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    color: rgba(255, 255, 255, 0.92);
+  }
+}
+
+@keyframes rotateHint {
+  0%,
+  60%,
+  100% {
+    transform: rotate(0deg);
+  }
+  30% {
+    transform: rotate(-90deg);
+  }
+}
+
+/* Honor reduced motion for the rotate hint's looping wobble. */
+html[data-reduced-motion="true"] .rotate-icon {
+  animation: none !important;
 }

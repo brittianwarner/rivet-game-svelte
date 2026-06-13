@@ -7,6 +7,35 @@ export const PLAYER_ACCENT_COLORS = [
 
 export type PlayerAccentColor = (typeof PLAYER_ACCENT_COLORS)[number];
 
+/**
+ * Per-car handling multipliers applied on top of the shared base physics
+ * constants (KART_MAX_SPEED / KART_ACCELERATION / KART_TURN_RATE / drift
+ * charge gain / collision mass). Every value is kept within ±~12% of 1.0 so
+ * each archetype trades one strength for another and no car is strictly best
+ * (lap-time spread stays inside ~3% on track1).
+ */
+export type CarStats = {
+  /** Scales the top-speed cap */
+  maxSpeedMult: number;
+  /** Scales throttle acceleration */
+  accelMult: number;
+  /** Scales the base turn rate (cornering grip) */
+  turnMult: number;
+  /** Scales how fast drift charge builds toward each boost tier */
+  driftChargeMult: number;
+  /** Relative mass for kart-kart collisions (heavier shoves lighter further) */
+  massMult: number;
+};
+
+/** Neutral stats — the fallback when a car id is unknown. */
+export const NEUTRAL_CAR_STATS: CarStats = {
+  maxSpeedMult: 1,
+  accelMult: 1,
+  turnMult: 1,
+  driftChargeMult: 1,
+  massMult: 1,
+};
+
 type RaceCarCatalogData = {
   id: string;
   name: string;
@@ -22,6 +51,8 @@ type RaceCarCatalogData = {
   };
   scale: number;
   rotationY: number;
+  /** Handling archetype — see CarStats */
+  stats: CarStats;
 };
 
 const CURATED_RACE_CAR_DATA = [
@@ -40,6 +71,14 @@ const CURATED_RACE_CAR_DATA = [
     },
     scale: 0.68,
     rotationY: 0,
+    // Heavy rally bruiser: highest top speed + mass, sluggish off the line.
+    stats: {
+      maxSpeedMult: 1.04,
+      accelMult: 0.92,
+      turnMult: 0.94,
+      driftChargeMult: 1.0,
+      massMult: 1.25,
+    },
   },
   {
     id: "lazergini-centari",
@@ -56,6 +95,14 @@ const CURATED_RACE_CAR_DATA = [
     },
     scale: 0.68,
     rotationY: 0,
+    // Grippy hypercar: best cornering + quick top speed, slightly light.
+    stats: {
+      maxSpeedMult: 1.03,
+      accelMult: 0.97,
+      turnMult: 1.08,
+      driftChargeMult: 1.0,
+      massMult: 0.95,
+    },
   },
   {
     id: "macrain-jetttail",
@@ -72,6 +119,14 @@ const CURATED_RACE_CAR_DATA = [
     },
     scale: 0.66,
     rotationY: 0,
+    // Drift specialist: charges boosts fastest, nimble, modest top speed.
+    stats: {
+      maxSpeedMult: 0.99,
+      accelMult: 1.02,
+      turnMult: 1.04,
+      driftChargeMult: 1.2,
+      massMult: 1.0,
+    },
   },
   {
     id: "raycan-nevada",
@@ -88,6 +143,14 @@ const CURATED_RACE_CAR_DATA = [
     },
     scale: 0.7,
     rotationY: 0,
+    // Sprinter: explosive acceleration + light, gives up a little top speed.
+    stats: {
+      maxSpeedMult: 0.98,
+      accelMult: 1.12,
+      turnMult: 1.0,
+      driftChargeMult: 1.0,
+      massMult: 0.9,
+    },
   },
 ] as const satisfies readonly RaceCarCatalogData[];
 
@@ -111,6 +174,18 @@ const RACE_CAR_MAP: Record<RaceCarId, RaceCarDefinition> = Object.fromEntries(
 
 export function getRaceCar(carId: RaceCarId): RaceCarDefinition {
   return RACE_CAR_MAP[carId] ?? RACE_CAR_MAP[DEFAULT_RACE_CAR_ID];
+}
+
+/**
+ * Handling stats for a car id. Accepts unknown / legacy values and falls back
+ * to neutral 1.0 multipliers so the physics step is safe for any kart.carId
+ * (including the reconnect-grace path where carId may be loosely typed).
+ */
+export function getCarStats(carId: unknown): CarStats {
+  if (isRaceCarId(carId)) {
+    return RACE_CAR_MAP[carId].stats;
+  }
+  return NEUTRAL_CAR_STATS;
 }
 
 export function isRaceCarId(value: unknown): value is RaceCarId {

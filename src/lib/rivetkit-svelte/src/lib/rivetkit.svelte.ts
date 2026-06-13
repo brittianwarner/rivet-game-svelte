@@ -47,7 +47,8 @@ export type { ActorOptions, AnyActorRegistry } from "@rivetkit/framework-base";
  */
 export type ActorState<
 	Registry extends AnyActorRegistry = AnyActorRegistry,
-	ActorName extends keyof ExtractActorsFromRegistry<Registry> = keyof ExtractActorsFromRegistry<Registry>,
+	ActorName extends keyof ExtractActorsFromRegistry<Registry> & string = keyof ExtractActorsFromRegistry<Registry> &
+		string,
 > = {
 	/** The active WebSocket connection, or `null` when not connected. */
 	readonly connection: ActorConn<AnyActorDefinition> | null;
@@ -88,7 +89,7 @@ export type ActorState<
  */
 export type ReactiveActorHandle<
 	Registry extends AnyActorRegistry,
-	ActorName extends keyof ExtractActorsFromRegistry<Registry>,
+	ActorName extends keyof ExtractActorsFromRegistry<Registry> & string,
 > = {
 	/** The active WebSocket connection, or `null` when not connected. */
 	readonly connection: ActorConn<AnyActorDefinition> | null;
@@ -196,7 +197,7 @@ export interface RivetKit<Registry extends AnyActorRegistry> {
 	 * @param opts - Actor options or a getter returning actor options.
 	 * @returns A reactive, proxied object with actor state and methods.
 	 */
-	useActor: <ActorName extends keyof ExtractActorsFromRegistry<Registry>>(
+	useActor: <ActorName extends keyof ExtractActorsFromRegistry<Registry> & string>(
 		opts: MaybeGetter<ActorOptions<Registry, ActorName>>,
 	) => ActorState<Registry, ActorName>;
 
@@ -211,7 +212,7 @@ export interface RivetKit<Registry extends AnyActorRegistry> {
 	 * @returns A reactive, proxied handle with actor state, methods, and lifecycle controls.
 	 */
 	createReactiveActor: <
-		ActorName extends keyof ExtractActorsFromRegistry<Registry>,
+		ActorName extends keyof ExtractActorsFromRegistry<Registry> & string,
 	>(
 		opts: ActorOptions<Registry, ActorName>,
 	) => ReactiveActorHandle<Registry, ActorName>;
@@ -263,10 +264,7 @@ export function createRivetKitWithClient<Registry extends AnyActorRegistry>(
 ): RivetKit<Registry> {
 	type Actors = ExtractActorsFromRegistry<Registry>;
 
-	const { getOrCreateActor } = createVanillaRivetKit<Registry, Actors>(
-		client,
-		opts,
-	);
+	const { getOrCreateActor } = createVanillaRivetKit<Registry>(client, opts);
 
 	// -------------------------------------------------------------------
 	// useActor — component-scoped, $effect-managed lifecycle
@@ -276,7 +274,7 @@ export function createRivetKitWithClient<Registry extends AnyActorRegistry>(
 	// giving flat access to actor methods (e.g. actor.sendMessage()).
 	// -------------------------------------------------------------------
 
-	function useActor<ActorName extends keyof Actors>(
+	function useActor<ActorName extends keyof Actors & string>(
 		optsOrGetter: MaybeGetter<ActorOptions<Registry, ActorName>>,
 	): ActorState<Registry, ActorName> {
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -353,7 +351,7 @@ export function createRivetKitWithClient<Registry extends AnyActorRegistry>(
 	// createReactiveActor — manual lifecycle, Proxy-forwarded methods
 	// -------------------------------------------------------------------
 
-	function createReactiveActor<ActorName extends keyof Actors>(
+	function createReactiveActor<ActorName extends keyof Actors & string>(
 		actorOpts: ActorOptions<Registry, ActorName>,
 	): ReactiveActorHandle<Registry, ActorName> {
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any

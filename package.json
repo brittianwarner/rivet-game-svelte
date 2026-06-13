@@ -11,29 +11,29 @@
     "generate:generic-cars-model": "node scripts/generate-generic-cars-model.mjs"
   },
   "dependencies": {
-    "@hono/node-server": "^1.19.9",
-    "@hono/node-ws": "^1.3.0",
+    "@hono/node-server": "^1.19.14",
+    "@hono/node-ws": "^1.3.1",
     "@lucide/svelte": "^0.575.0",
     "@rivetkit/svelte": "file:./src/lib/rivetkit-svelte",
-    "@threlte/core": "^8.0.2",
-    "@threlte/extras": "^9.1.4",
-    "hono": "^4.12.3",
-    "rivetkit": "^2.1.3",
+    "@threlte/core": "^8.5.16",
+    "@threlte/extras": "^9.21.0",
+    "hono": "^4.12.25",
+    "rivetkit": "^2.2.1",
     "runed": "^0.37.1",
     "three": "^0.172.0"
   },
   "devDependencies": {
     "@sveltejs/adapter-vercel": "^6.3.3",
-    "@sveltejs/kit": "^2.52.2",
+    "@sveltejs/kit": "^2.64.0",
     "@sveltejs/vite-plugin-svelte": "^6.2.4",
-    "@tailwindcss/vite": "^4.2.0",
-    "@types/node": "^25.3.2",
+    "@tailwindcss/vite": "^4.3.0",
+    "@types/node": "^25.9.2",
     "@types/three": "^0.172.0",
-    "prettier-plugin-svelte": "^3.5.1",
-    "svelte": "^5.51.5",
-    "svelte-check": "^4.4.1",
-    "tailwindcss": "^4.2.0",
+    "prettier-plugin-svelte": "^3.5.2",
+    "svelte": "^5.56.3",
+    "svelte-check": "^4.6.0",
+    "tailwindcss": "^4.3.0",
     "typescript": "^5.9.3",
-    "vite": "^7.3.1"
+    "vite": "^7.3.5"
   }
 }

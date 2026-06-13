@@ -48,6 +48,25 @@
 	let leftLedGeo: BufferGeometry | null = $state(null);
 	let rightLedGeo: BufferGeometry | null = $state(null);
 
+	// Neon headline EDGE STRIPS — crisp glowing ribbons flush with the road edge.
+	let leftEdgeStripGeo: BufferGeometry | null = $state(null);
+	let rightEdgeStripGeo: BufferGeometry | null = $state(null);
+
+	// Neon GRID VOID ground (manually new'd THREE.GridHelper — must be disposed).
+	let neonGrid: THREE.GridHelper | null = $state(null);
+
+	// Start/finish checker banner texture (manually new'd CanvasTexture — disposed).
+	let checkerTexture: THREE.CanvasTexture | null = $state(null);
+
+	// -----------------------------------------------------------------------
+	// Neon palette (4-color language). cyan=LEFT edge/side, magenta=RIGHT
+	// edge/side, green=boost. (amber #FFD93D = item boxes, rendered in
+	// ItemBox.svelte.) Lock these everywhere so players read drift direction.
+	// -----------------------------------------------------------------------
+	const NEON_CYAN = 0x00e5ff;
+	const NEON_MAGENTA = 0xff2bd6;
+	const NEON_GREEN = 0x00ffa3;
+
 	// Boost chevron groups — animated arrow shapes above boost pads
 	interface ChevronData {
 		positions: { x: number; y: number; z: number }[];
@@ -69,6 +88,18 @@
 
 	// Chevron animation time
 	let chevronTime = $state(0);
+
+	// Checkpoint-gate flash phase (0 = full side color, 1 = flashed white).
+	let gateFlash = $state(0);
+
+	/** Base gate color for checkpoint index i: alternating cyan / magenta. */
+	function gateBaseHex(i: number): number {
+		return i % 2 === 0 ? NEON_CYAN : NEON_MAGENTA;
+	}
+	/** Gate color mixed toward white by the current flash phase (reactive). */
+	function gateFlashColor(i: number, flash: number): THREE.Color {
+		return new THREE.Color(gateBaseHex(i)).lerp(new THREE.Color(0xffffff), flash);
+	}
 
 	// -----------------------------------------------------------------------
 	// Helpers
@@ -254,24 +285,50 @@
 	}
 
 	/**
-	 * Determine LED color for a given segment index.
-	 * Green near boost zones, white near checkpoints, default blue.
+	 * Determine the per-segment wall-top LED color override.
+	 * Returns boost-green near boost zones, white near checkpoints, or null to
+	 * fall back to the per-side base color (cyan on the left, magenta on the
+	 * right). All returned colors are pre-multiplied so they bloom (>1.0).
 	 */
-	function getLedColor(segIdx: number): string {
-		// Check if near a boost zone
+	function getLedColor(segIdx: number): THREE.Color | null {
+		// Check if near a boost zone → on-palette neon green.
 		for (const bz of boostZones) {
 			if (segIdx >= bz.segmentStart - 5 && segIdx <= bz.segmentEnd + 5) {
-				return "#00FFAA";
+				return new THREE.Color(NEON_GREEN).multiplyScalar(1.8);
 			}
 		}
-		// Check if near a checkpoint
+		// Check if near a checkpoint → white-hot.
 		for (const cp of track.checkpoints) {
 			const diff = Math.abs(segIdx - cp.segmentIndex);
 			if (diff < 4 || diff > segCount - 4) {
-				return "#FFFFFF";
+				return new THREE.Color(0xffffff).multiplyScalar(1.8);
 			}
 		}
-		return "#0A9EF5";
+		return null;
+	}
+
+	/**
+	 * Build a per-vertex color buffer for a wall-top LED strip so boost/checkpoint
+	 * adjacent segments tint green/white while the rest carry the side base color.
+	 * Mirrors buildLedStrip's quad layout (count quads × 6 verts).
+	 */
+	function buildLedColors(
+		count: number,
+		baseColor: THREE.Color,
+	): Float32BufferAttribute {
+		const colors = new Float32Array(count * 6 * 3);
+		let vi = 0;
+		for (let i = 0; i < count; i++) {
+			const override = getLedColor(i);
+			const c = override ?? baseColor;
+			for (let n = 0; n < 6; n++) {
+				colors[vi] = c.r;
+				colors[vi + 1] = c.g;
+				colors[vi + 2] = c.b;
+				vi += 3;
+			}
+		}
+		return new Float32BufferAttribute(colors, 3);
 	}
 
 	// -----------------------------------------------------------------------
@@ -293,9 +350,40 @@
 			const rightNormals = segments.map((s) => ({ x: s.normal.x, z: s.normal.z }));
 			rightWallGeo = buildWallStrip(rights, TRACK_WALL_HEIGHT, rightNormals);
 
-			// -- Wall-top LED strips --
-			leftLedGeo = buildLedStrip(lefts, leftNormals, TRACK_WALL_HEIGHT, 0.08);
-			rightLedGeo = buildLedStrip(rights, rightNormals, TRACK_WALL_HEIGHT, 0.08);
+			// -- Wall-top LED strips (widened 0.08 -> 0.25, vertex-colored per side) --
+			leftLedGeo = buildLedStrip(lefts, leftNormals, TRACK_WALL_HEIGHT, 0.25);
+			rightLedGeo = buildLedStrip(rights, rightNormals, TRACK_WALL_HEIGHT, 0.25);
+			leftLedGeo.setAttribute(
+				"color",
+				buildLedColors(segCount, new THREE.Color(NEON_CYAN).multiplyScalar(1.8)),
+			);
+			rightLedGeo.setAttribute(
+				"color",
+				buildLedColors(segCount, new THREE.Color(NEON_MAGENTA).multiplyScalar(1.8)),
+			);
+
+			// -- HEADLINE edge strips — crisp neon ribbons flush at the road surface.
+			// Inset ~0.3u from the true edge, lifted ~0.02u, 0.6u wide, flat-up.
+			// Run them along an inset edge so the strip sits ON the road, not the wall.
+			const STRIP_INSET = 0.3;
+			const STRIP_LIFT = 0.02;
+			const STRIP_WIDTH = 0.6;
+			// inward normals (toward road center) for inset; strip then grows outward.
+			const leftInset = segments.map((s) => ({
+				x: s.left.x + s.normal.x * STRIP_INSET,
+				y: s.left.y,
+				z: s.left.z + s.normal.z * STRIP_INSET,
+			}));
+			const rightInset = segments.map((s) => ({
+				x: s.right.x - s.normal.x * STRIP_INSET,
+				y: s.right.y,
+				z: s.right.z - s.normal.z * STRIP_INSET,
+			}));
+			// outward normals point back toward the true edge so the strip hugs it.
+			const leftStripNormals = segments.map((s) => ({ x: -s.normal.x, z: -s.normal.z }));
+			const rightStripNormals = segments.map((s) => ({ x: s.normal.x, z: s.normal.z }));
+			leftEdgeStripGeo = buildLedStrip(leftInset, leftStripNormals, STRIP_LIFT, STRIP_WIDTH);
+			rightEdgeStripGeo = buildLedStrip(rightInset, rightStripNormals, STRIP_LIFT, STRIP_WIDTH);
 		}
 
 		// -- Boost pad geometry --
@@ -381,10 +469,10 @@
 
 		// -- Center line dashes --
 		if (isProceduralTrack) {
-			const DASH_LENGTH = 3;
-			const GAP_LENGTH = 3;
-			const DASH_HALF_WIDTH = 0.08 * overlayScale;
-			const DASH_Y_OFFSET = 0.015 * overlayScale;
+			const DASH_LENGTH = 4;
+			const GAP_LENGTH = 5;
+			const DASH_HALF_WIDTH = 0.35 * overlayScale;
+			const DASH_Y_OFFSET = 0.04 * overlayScale;
 			const dashPositions: number[] = [];
 			const dashNormals: number[] = [];
 
@@ -435,6 +523,35 @@
 				);
 				centerDashGeo = cdGeo;
 			}
+
+			// -- Neon grid void — a faintly glowing cyan grid retreating into the
+			// fog. Manually new'd, so geometry + material are disposed in onDestroy.
+			const grid = new THREE.GridHelper(2000, 200, 0x00e5ff, 0x12204a);
+			grid.position.y = -9.9;
+			(grid.material as THREE.Material).toneMapped = false;
+			neonGrid = grid;
+
+			// -- Start/finish checker banner texture (black/white checker). --
+			const checkCanvas = document.createElement("canvas");
+			checkCanvas.width = 256;
+			checkCanvas.height = 32;
+			const ctx = checkCanvas.getContext("2d");
+			if (ctx) {
+				const cols = 16;
+				const cell = checkCanvas.width / cols; // 16px
+				const rows = Math.round(checkCanvas.height / cell); // 2
+				for (let cy = 0; cy < rows; cy++) {
+					for (let cx = 0; cx < cols; cx++) {
+						ctx.fillStyle = (cx + cy) % 2 === 0 ? "#ffffff" : "#0a0a14";
+						ctx.fillRect(cx * cell, cy * cell, cell, cell);
+					}
+				}
+				const tex = new THREE.CanvasTexture(checkCanvas);
+				tex.wrapS = THREE.RepeatWrapping;
+				tex.repeat.set(8, 1);
+				tex.colorSpace = THREE.SRGBColorSpace;
+				checkerTexture = tex;
+			}
 		}
 	});
 
@@ -446,6 +563,9 @@
 
 	useTask((delta) => {
 		chevronTime += delta;
+
+		// Checkpoint gates pulse-flash toward white (0..~0.55), eased.
+		gateFlash = (Math.sin(chevronTime * 2.2) * 0.5 + 0.5) * 0.55;
 
 		// Animate each chevron group: cycle positions forward
 		for (let ci = 0; ci < boostChevrons.length; ci++) {
@@ -489,49 +609,32 @@
 		centerDashGeo?.dispose();
 		leftLedGeo?.dispose();
 		rightLedGeo?.dispose();
+		leftEdgeStripGeo?.dispose();
+		rightEdgeStripGeo?.dispose();
 		for (const geo of boostGeos) {
 			geo.dispose();
 		}
+		// Manually new'd resources need explicit disposal.
+		if (neonGrid) {
+			neonGrid.geometry.dispose();
+			(neonGrid.material as THREE.Material).dispose();
+		}
+		checkerTexture?.dispose();
 	});
 </script>
 
 {#if isProceduralTrack}
 	<!-- ===================================================================== -->
-	<!-- Ground plane — large grass surface surrounding the track              -->
+	<!-- Neon grid void — near-black ground plane + faintly glowing cyan grid   -->
+	<!-- retreating into the indigo fog.                                        -->
 	<!-- ===================================================================== -->
 	<T.Mesh rotation.x={-Math.PI / 2} position.y={-10} receiveShadow>
 		<T.PlaneGeometry args={[2000, 2000]} />
-		<T.MeshStandardMaterial
-			color="#2d5a1e"
-			roughness={0.95}
-			metalness={0.0}
-		/>
+		<T.MeshStandardMaterial color="#04040c" roughness={1} metalness={0} />
 	</T.Mesh>
-	<!-- Slightly lighter grass patches for texture variation -->
-	<T.Mesh rotation.x={-Math.PI / 2} position={[-120, -9.98, 80]}>
-		<T.CircleGeometry args={[80, 32]} />
-		<T.MeshStandardMaterial
-			color="#3a6b2a"
-			roughness={0.95}
-			metalness={0.0}
-		/>
-	</T.Mesh>
-	<T.Mesh rotation.x={-Math.PI / 2} position={[100, -9.98, -60]}>
-		<T.CircleGeometry args={[70, 32]} />
-		<T.MeshStandardMaterial
-			color="#336625"
-			roughness={0.95}
-			metalness={0.0}
-		/>
-	</T.Mesh>
-	<T.Mesh rotation.x={-Math.PI / 2} position={[-40, -9.98, -140]}>
-		<T.CircleGeometry args={[100, 32]} />
-		<T.MeshStandardMaterial
-			color="#3a6b2a"
-			roughness={0.95}
-			metalness={0.0}
-		/>
-	</T.Mesh>
+	{#if neonGrid}
+		<T is={neonGrid} />
+	{/if}
 {/if}
 
 {#if gltfVisual}
@@ -557,28 +660,56 @@
 {/if}
 
 <!-- ===================================================================== -->
-<!-- Road surface — dark asphalt                                           -->
+<!-- Road surface — wet-neon asphalt (near-black, low roughness/high metal  -->
+<!-- so the bloomed neon edges and sky sheen reflect down the road).        -->
 <!-- ===================================================================== -->
 {#if roadGeo}
+	<!-- FrontSide: the strip is wound CCW from above and only ever seen from
+	     above — single-sided keeps early-Z effective. -->
 	<T.Mesh geometry={roadGeo} receiveShadow>
 		<T.MeshStandardMaterial
-			color="#333340"
-			roughness={0.8}
-			metalness={0.1}
+			color="#0a0a14"
+			roughness={0.35}
+			metalness={0.6}
+			envMapIntensity={1}
+			side={FrontSide}
+		/>
+	</T.Mesh>
+{/if}
+
+<!-- ===================================================================== -->
+<!-- HEADLINE neon EDGE STRIPS — crisp glowing ribbons flush with the road  -->
+<!-- edges. Left=cyan, right=magenta. Bloomed into solid neon ribbons that  -->
+<!-- trace the whole layout (the single biggest visual win).                -->
+<!-- ===================================================================== -->
+{#if leftEdgeStripGeo}
+	<T.Mesh geometry={leftEdgeStripGeo}>
+		<T.MeshBasicMaterial
+			color={new THREE.Color(NEON_CYAN).multiplyScalar(2.0)}
+			toneMapped={false}
+			side={DoubleSide}
+		/>
+	</T.Mesh>
+{/if}
+{#if rightEdgeStripGeo}
+	<T.Mesh geometry={rightEdgeStripGeo}>
+		<T.MeshBasicMaterial
+			color={new THREE.Color(NEON_MAGENTA).multiplyScalar(2.0)}
+			toneMapped={false}
 			side={DoubleSide}
 		/>
 	</T.Mesh>
 {/if}
 
 <!-- ===================================================================== -->
-<!-- Left wall — translucent blue barrier                                  -->
+<!-- Left wall — translucent CYAN barrier (faint side glow)                -->
 <!-- ===================================================================== -->
 {#if leftWallGeo}
 	<T.Mesh geometry={leftWallGeo}>
 		<T.MeshStandardMaterial
-			color="#0A9EF5"
-			emissive="#0A9EF5"
-			emissiveIntensity={0.2}
+			color="#00E5FF"
+			emissive="#00E5FF"
+			emissiveIntensity={0.6}
 			transparent
 			opacity={0.12}
 			side={DoubleSide}
@@ -590,14 +721,14 @@
 {/if}
 
 <!-- ===================================================================== -->
-<!-- Right wall — translucent blue barrier                                 -->
+<!-- Right wall — translucent MAGENTA barrier (faint side glow)            -->
 <!-- ===================================================================== -->
 {#if rightWallGeo}
 	<T.Mesh geometry={rightWallGeo}>
 		<T.MeshStandardMaterial
-			color="#0A9EF5"
-			emissive="#0A9EF5"
-			emissiveIntensity={0.2}
+			color="#FF2BD6"
+			emissive="#FF2BD6"
+			emissiveIntensity={0.6}
 			transparent
 			opacity={0.12}
 			side={DoubleSide}
@@ -609,28 +740,21 @@
 {/if}
 
 <!-- ===================================================================== -->
-<!-- Wall-top LED strip — left                                             -->
+<!-- Wall-top LED strip — left (cyan base, green near boost, white near CP) -->
+<!-- Per-vertex colors are pre-multiplied (>1.0) and bloom; toneMapped off. -->
 <!-- ===================================================================== -->
 {#if leftLedGeo}
 	<T.Mesh geometry={leftLedGeo}>
-		<T.MeshBasicMaterial
-			color="#0A9EF5"
-			transparent
-			opacity={0.9}
-		/>
+		<T.MeshBasicMaterial vertexColors toneMapped={false} />
 	</T.Mesh>
 {/if}
 
 <!-- ===================================================================== -->
-<!-- Wall-top LED strip — right                                            -->
+<!-- Wall-top LED strip — right (magenta base, green/white overrides)       -->
 <!-- ===================================================================== -->
 {#if rightLedGeo}
 	<T.Mesh geometry={rightLedGeo}>
-		<T.MeshBasicMaterial
-			color="#0A9EF5"
-			transparent
-			opacity={0.9}
-		/>
+		<T.MeshBasicMaterial vertexColors toneMapped={false} />
 	</T.Mesh>
 {/if}
 
@@ -640,8 +764,8 @@
 {#each boostGeos as geo}
 	<T.Mesh geometry={geo}>
 		<T.MeshStandardMaterial
-			color="#00FFAA"
-			emissive="#00FFAA"
+			color="#00FFA3"
+			emissive="#00FFA3"
 			emissiveIntensity={1.5}
 			transparent
 			opacity={0.7}
@@ -661,11 +785,12 @@
 	>
 		{#each chev.positions as pos, ai}
 			<T.Group position={[pos.x, pos.y + 0.05 * overlayScale, pos.z]}>
-				<!-- Chevron arrow shape: flat triangle pointing forward -->
+				<!-- Chevron arrow shape: flat triangle pointing forward (glows) -->
 				<T.Mesh rotation.x={-Math.PI / 2}>
 					<T.ConeGeometry args={[0.4 * overlayScale, 0.8 * overlayScale, 3]} />
 					<T.MeshBasicMaterial
-						color="#00FFAA"
+						color={new THREE.Color(NEON_GREEN).multiplyScalar(1.6)}
+						toneMapped={false}
 						transparent
 						opacity={0.6}
 						depthWrite={false}
@@ -693,55 +818,53 @@
 {/if}
 
 <!-- ===================================================================== -->
-<!-- Center line dashes — thin white dashed line along track center        -->
+<!-- Center line dashes — white-hot dotted spine that blooms                -->
 <!-- ===================================================================== -->
 {#if centerDashGeo}
 	<T.Mesh geometry={centerDashGeo}>
-		<T.MeshStandardMaterial
-			color="#ffffff"
-			emissive="#ffffff"
-			emissiveIntensity={0.6}
+		<T.MeshBasicMaterial
+			color={new THREE.Color(0xffffff).multiplyScalar(1.4)}
+			toneMapped={false}
 			transparent
-			opacity={0.35}
+			opacity={0.85}
 			side={FrontSide}
 		/>
 	</T.Mesh>
 {/if}
 
 <!-- ===================================================================== -->
-<!-- Checkpoint markers — subtle translucent arches at each checkpoint     -->
+<!-- Light gates at every checkpoint — glowing gantries spanning the road.  -->
+<!-- Alternating cyan / magenta by index, pulsing toward white.            -->
 <!-- ===================================================================== -->
 {#each track.checkpoints as cp, i}
 	{@const seg = segments[cp.segmentIndex]}
-	{@const checkpointHeight = TRACK_WALL_HEIGHT * overlayScale}
-	{@const checkpointRadius = 0.06 * overlayScale}
+	{@const gateHeight = 9}
+	{@const span = Math.sqrt((seg.right.x - seg.left.x) ** 2 + (seg.right.z - seg.left.z) ** 2)}
+	{@const midX = (seg.left.x + seg.right.x) / 2}
+	{@const midZ = (seg.left.z + seg.right.z) / 2}
+	{@const baseY = Math.min(seg.left.y, seg.right.y)}
+	{@const angle = Math.atan2(seg.right.z - seg.left.z, seg.right.x - seg.left.x)}
+	{@const gateColor = gateFlashColor(i, gateFlash)}
+	{@const baseHex = i % 2 === 0 ? "#00E5FF" : "#FF2BD6"}
 	<!-- Left post -->
-	<T.Mesh
-		position={[seg.left.x, seg.left.y + checkpointHeight * 0.5, seg.left.z]}
-	>
-		<T.CylinderGeometry args={[checkpointRadius, checkpointRadius, checkpointHeight, 6]} />
-		<T.MeshStandardMaterial
-			color="#0A9EF5"
-			emissive="#0A9EF5"
-			emissiveIntensity={0.4}
-			transparent
-			opacity={0.2}
-			depthWrite={false}
-		/>
+	<T.Mesh position={[seg.left.x, baseY + gateHeight / 2, seg.left.z]}>
+		<T.BoxGeometry args={[0.4, gateHeight, 0.4]} />
+		<T.MeshStandardMaterial color={baseHex} emissive={gateColor} emissiveIntensity={2.2} />
 	</T.Mesh>
 	<!-- Right post -->
-	<T.Mesh
-		position={[seg.right.x, seg.right.y + checkpointHeight * 0.5, seg.right.z]}
-	>
-		<T.CylinderGeometry args={[checkpointRadius, checkpointRadius, checkpointHeight, 6]} />
-		<T.MeshStandardMaterial
-			color="#0A9EF5"
-			emissive="#0A9EF5"
-			emissiveIntensity={0.4}
-			transparent
-			opacity={0.2}
-			depthWrite={false}
-		/>
+	<T.Mesh position={[seg.right.x, baseY + gateHeight / 2, seg.right.z]}>
+		<T.BoxGeometry args={[0.4, gateHeight, 0.4]} />
+		<T.MeshStandardMaterial color={baseHex} emissive={gateColor} emissiveIntensity={2.2} />
+	</T.Mesh>
+	<!-- Glowing crossbar spanning left -> right at the top -->
+	<T.Mesh position={[midX, baseY + gateHeight, midZ]} rotation.y={-angle}>
+		<T.BoxGeometry args={[span, 0.6, 0.5]} />
+		<T.MeshStandardMaterial color={baseHex} emissive={gateColor} emissiveIntensity={2.2} />
+	</T.Mesh>
+	<!-- Thin top light-tube arch silhouette (flattened torus half-arc) -->
+	<T.Mesh position={[midX, baseY + gateHeight + 0.1, midZ]} rotation={[Math.PI / 2, 0, -angle]}>
+		<T.TorusGeometry args={[span / 2, 0.12, 8, 24, Math.PI]} />
+		<T.MeshBasicMaterial color={gateColor} toneMapped={false} />
 	</T.Mesh>
 {/each}
 
@@ -750,71 +873,130 @@
 <!-- ===================================================================== -->
 {#each sceneryItems as item}
 	{#if item.type === "pylon"}
-		<!-- Tall emissive cylinder -->
+		<!-- Neon pylon — bright emissive cylinder + glowing sphere cap. The
+		     track.ts cycle (FF00FF / 00FFFF / FFFF00) is remapped onto the locked
+		     palette (magenta / cyan / boost-green). -->
+		{@const pylonColor =
+			item.color === "#FFFF00"
+				? "#00FFA3"
+				: item.color === "#FF00FF"
+					? "#FF2BD6"
+					: item.color === "#00FFFF"
+						? "#00E5FF"
+						: item.color || "#00E5FF"}
 		<T.Mesh
+			castShadow
 			position={[item.position.x, item.position.y + item.height / 2, item.position.z]}
 		>
 			<T.CylinderGeometry args={[0.15, 0.15, item.height, 8]} />
 			<T.MeshStandardMaterial
-				color={item.color || "#0A9EF5"}
-				emissive={item.color || "#0A9EF5"}
-				emissiveIntensity={0.8}
+				color={pylonColor}
+				emissive={pylonColor}
+				emissiveIntensity={2.0}
+			/>
+		</T.Mesh>
+		<!-- Glowing sphere cap at the top -->
+		<T.Mesh position={[item.position.x, item.position.y + item.height, item.position.z]}>
+			<T.SphereGeometry args={[0.4, 12, 12]} />
+			<T.MeshBasicMaterial
+				color={new THREE.Color(pylonColor).multiplyScalar(1.8)}
+				toneMapped={false}
 			/>
 		</T.Mesh>
 	{:else if item.type === "block"}
-		<!-- Rectangular box with emissive surface -->
+		<!-- Dark skyscraper body + lit neon edge outline (alternating side hue). -->
+		{@const blockW = item.width || 2}
+		{@const blockH = item.height || 1}
+		{@const blockD = item.depth || 2}
+		{@const edgeHex = item.position.x < -200 ? "#00E5FF" : "#FF2BD6"}
 		<T.Mesh
-			position={[item.position.x, item.position.y + (item.height || 1) / 2, item.position.z]}
+			castShadow
+			position={[item.position.x, item.position.y + blockH / 2, item.position.z]}
 		>
-			<T.BoxGeometry args={[item.width || 2, item.height || 1, item.depth || 2]} />
+			<T.BoxGeometry args={[blockW, blockH, blockD]} />
 			<T.MeshStandardMaterial
-				color={item.color || "#0066AA"}
-				emissive={item.color || "#0066AA"}
-				emissiveIntensity={0.4}
+				color="#0a0a1a"
+				emissive={item.color || "#0a0a1a"}
+				emissiveIntensity={0.3}
 				roughness={0.6}
 				metalness={0.3}
 			/>
 		</T.Mesh>
+		<!-- Neon edge outline (skyscraper silhouette glow) -->
+		<T.LineSegments position={[item.position.x, item.position.y + blockH / 2, item.position.z]}>
+			<T.EdgesGeometry args={[new THREE.BoxGeometry(blockW, blockH, blockD)]} />
+			<T.LineBasicMaterial
+				color={new THREE.Color(edgeHex).multiplyScalar(1.6)}
+				toneMapped={false}
+			/>
+		</T.LineSegments>
+		<!-- Lit 'window' band near the top -->
+		<T.Mesh position={[item.position.x, item.position.y + blockH * 0.82, item.position.z]}>
+			<T.BoxGeometry args={[blockW + 0.05, blockH * 0.06, blockD + 0.05]} />
+			<T.MeshBasicMaterial
+				color={new THREE.Color(edgeHex).multiplyScalar(1.4)}
+				toneMapped={false}
+			/>
+		</T.Mesh>
 	{:else if item.type === "arch"}
-		<!-- Two posts + crossbar spanning the road at segment 0 -->
+		<!-- START / FINISH gantry — the money shot at lap crossings. -->
 		{@const seg0 = segments[0]}
-		<!-- Left post -->
-		<T.Mesh
-			position={[seg0.left.x, seg0.left.y + (item.height || 4) / 2, seg0.left.z]}
-		>
-			<T.CylinderGeometry args={[0.2, 0.2, item.height || 4, 8]} />
-			<T.MeshStandardMaterial
-				color={item.color || "#0A9EF5"}
-				emissive={item.color || "#0A9EF5"}
-				emissiveIntensity={0.6}
-			/>
-		</T.Mesh>
-		<!-- Right post -->
-		<T.Mesh
-			position={[seg0.right.x, seg0.right.y + (item.height || 4) / 2, seg0.right.z]}
-		>
-			<T.CylinderGeometry args={[0.2, 0.2, item.height || 4, 8]} />
-			<T.MeshStandardMaterial
-				color={item.color || "#0A9EF5"}
-				emissive={item.color || "#0A9EF5"}
-				emissiveIntensity={0.6}
-			/>
-		</T.Mesh>
-		<!-- Crossbar -->
+		{@const archH = item.height || 11}
 		{@const archMidX = (seg0.left.x + seg0.right.x) / 2}
 		{@const archMidZ = (seg0.left.z + seg0.right.z) / 2}
+		{@const archBaseY = Math.min(seg0.left.y, seg0.right.y)}
 		{@const archSpan = Math.sqrt((seg0.right.x - seg0.left.x) ** 2 + (seg0.right.z - seg0.left.z) ** 2)}
 		{@const archAngle = Math.atan2(seg0.right.z - seg0.left.z, seg0.right.x - seg0.left.x)}
+		<!-- Left pylon (thick cyan) -->
+		<T.Mesh position={[seg0.left.x, archBaseY + archH / 2, seg0.left.z]}>
+			<T.CylinderGeometry args={[0.5, 0.5, archH, 12]} />
+			<T.MeshStandardMaterial color="#00E5FF" emissive="#00E5FF" emissiveIntensity={2.5} />
+		</T.Mesh>
+		<!-- Right pylon (thick magenta) -->
+		<T.Mesh position={[seg0.right.x, archBaseY + archH / 2, seg0.right.z]}>
+			<T.CylinderGeometry args={[0.5, 0.5, archH, 12]} />
+			<T.MeshStandardMaterial color="#FF2BD6" emissive="#FF2BD6" emissiveIntensity={2.5} />
+		</T.Mesh>
+		<!-- Checkered banner across the top -->
+		<T.Mesh position={[archMidX, archBaseY + archH, archMidZ]} rotation.y={-archAngle}>
+			<T.BoxGeometry args={[archSpan, 1.6, 0.2]} />
+			{#if checkerTexture}
+				<T.MeshStandardMaterial
+					map={checkerTexture}
+					emissive="#ffffff"
+					emissiveMap={checkerTexture}
+					emissiveIntensity={1.5}
+					toneMapped={false}
+				/>
+			{:else}
+				<T.MeshBasicMaterial
+					color={new THREE.Color(0xffffff).multiplyScalar(1.5)}
+					toneMapped={false}
+				/>
+			{/if}
+		</T.Mesh>
+		<!-- Two downward-facing strip lights under the banner -->
 		<T.Mesh
-			position={[archMidX, (item.height || 4), archMidZ]}
+			position={[
+				archMidX + Math.cos(archAngle) * archSpan * 0.25,
+				archBaseY + archH - 0.9,
+				archMidZ + Math.sin(archAngle) * archSpan * 0.25,
+			]}
 			rotation.y={-archAngle}
 		>
-			<T.BoxGeometry args={[archSpan, 0.3, 0.3]} />
-			<T.MeshStandardMaterial
-				color={item.color || "#0A9EF5"}
-				emissive={item.color || "#0A9EF5"}
-				emissiveIntensity={0.6}
-			/>
+			<T.BoxGeometry args={[archSpan * 0.18, 0.12, 0.5]} />
+			<T.MeshBasicMaterial color={new THREE.Color(0x00e5ff).multiplyScalar(1.6)} toneMapped={false} />
+		</T.Mesh>
+		<T.Mesh
+			position={[
+				archMidX - Math.cos(archAngle) * archSpan * 0.25,
+				archBaseY + archH - 0.9,
+				archMidZ - Math.sin(archAngle) * archSpan * 0.25,
+			]}
+			rotation.y={-archAngle}
+		>
+			<T.BoxGeometry args={[archSpan * 0.18, 0.12, 0.5]} />
+			<T.MeshBasicMaterial color={new THREE.Color(0xff2bd6).multiplyScalar(1.6)} toneMapped={false} />
 		</T.Mesh>
 	{/if}
 {/each}

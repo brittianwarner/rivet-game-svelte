@@ -14,44 +14,29 @@
 import { actor, event } from "rivetkit";
 import {
   ALLOWED_ORIGINS,
-  BOOST_PAD_DURATION,
-  BOOST_PAD_SPEED,
   BANANA_RADIUS,
-  DRIFT_BOOST_DURATIONS,
-  DRIFT_BOOST_SPEEDS,
-  DRIFT_CHARGE_THRESHOLDS,
-  DRIFT_TURN_MULTIPLIER,
   GREEN_SHELL_MAX_BOUNCES,
   ITEM_BOX_RESPAWN_TIME,
-  ITEM_PROBABILITIES,
-  KART_ACCELERATION,
-  KART_BRAKE_FORCE,
+  HELD_ITEM_DEFENSE_OFFSET,
+  HELD_ITEM_DEFENSE_RADIUS,
+  PROJECTILE_PAIR_GRACE_MS,
+  isHoldableItem,
   KART_COLLISION_PUSH,
-  KART_DRAG,
-  KART_MAX_SPEED,
   KART_RADIUS,
-  KART_REVERSE_ACCEL,
-  KART_REVERSE_MAX,
-  KART_TURN_RATE,
   LIGHTNING_SHRINK_DURATION,
-  MIN_DRIFT_SPEED,
   MUSHROOM_BOOST_DURATION,
   MUSHROOM_BOOST_SPEED,
-  NUM_CHECKPOINTS,
-  OFF_ROAD_SPEED_MULT,
-  OFF_ROAD_BOUNDARY,
-  OUT_OF_BOUNDS_BOUNDARY,
   PRE_RACE_COUNTDOWN,
   PROJECTILE_MAX_AGE,
   RACE_FINISH_DISPLAY,
   RACE_LAP_COUNT,
   RACE_MAX_PLAYERS,
+  RECONNECT_GRACE_MS,
   RACE_SERVER_TICK_INTERVAL,
   RACE_SNAPSHOT_INTERVAL,
   RACE_TIME_LIMIT,
   SHELL_RADIUS,
   SHELL_SPEED,
-  SHRUNK_SPEED_PENALTY,
   SPIN_DURATION,
   STAR_DURATION,
   STAR_SPEED_BONUS,
@@ -60,7 +45,9 @@ import {
   vec3Zero,
   vec3Distance2D,
   // New constants
-  ROCKET_START_WINDOW,
+  ROCKET_START_PERFECT_WINDOW,
+  ROCKET_START_GOOD_WINDOW,
+  ROCKET_START_OK_WINDOW,
   ROCKET_START_PERFECT_SPEED,
   ROCKET_START_PERFECT_DURATION,
   ROCKET_START_GOOD_SPEED,
@@ -68,66 +55,26 @@ import {
   ROCKET_START_OK_SPEED,
   ROCKET_START_OK_DURATION,
   ROCKET_START_STALL_DURATION,
-  ROCKET_START_STALL_MAX_SPEED,
   HITSTOP_FRAMES,
   SLIPSTREAM_CONE_ANGLE,
   SLIPSTREAM_CONE_LENGTH,
   SLIPSTREAM_CHARGE_TICKS,
-  SLIPSTREAM_BONUS,
   SLIPSTREAM_DURATION_TICKS,
-  SLIPSTREAM_DECAY_TICKS,
-  TURN_CURVE_EXPONENT,
-  TURN_HIGH_SPEED_REDUCTION,
-  COUNTER_STEER_BONUS,
-  SNAP_STEERING_FRAMES,
-  SNAP_STEERING_MULT,
-  HIT_IMMUNITY_TICKS,
   BLUE_SHELL_GAP_THRESHOLD,
-  // Grip-budget / slip angle
-  SLIP_ANGLE_BUILDUP,
-  SLIP_ANGLE_RECOVERY,
+  // Grip-budget / slip angle (collision response)
   SLIP_ANGLE_MAX,
-  GRIP_LOSS_AT_MAX_SLIP,
-  LATERAL_PUSH_STRENGTH,
-  DRIFT_SLIP_FLOOR,
-  // Surface types
-  SURFACE_GRIP,
-  SURFACE_DRAG,
-  SURFACE_DRIFT_CHARGE_MULT,
-  DUST_CARRYOVER_TICKS,
-  DUST_CARRYOVER_GRIP_PENALTY,
-  // Compression / banking
-  CREST_GRIP_LOSS,
-  COMPRESSION_GRIP_GAIN,
-  LANDING_SCRUB_THRESHOLD,
-  LANDING_SCRUB_PENALTY,
-  LANDING_CLEAN_BONUS,
-  BANKING_GRIP_BONUS,
   // Contact duel
   SIDE_RUB_SCRUB_RATE,
   REAR_TAP_DESTABILIZE,
-  WALL_SCRUB_SPEED_LOSS,
-  WALL_SCRUB_ANGLE_THRESHOLD,
   MASS_ADVANTAGE_PUSH,
   // Flow chain
-  FLOW_GAIN_DRIFT_RELEASE,
-  FLOW_GAIN_CLEAN_CORNER,
   FLOW_GAIN_SLIPSTREAM,
-  FLOW_GAIN_BOOST_PAD,
   FLOW_GAIN_ROCKET_START,
-  FLOW_DECAY_PER_TICK,
   FLOW_DECAY_ON_HIT,
-  FLOW_DECAY_OFF_ROAD,
   FLOW_MAX,
-  FLOW_SPEED_BONUS,
-  FLOW_TURN_BONUS,
-  FLOW_BOOST_EXTEND_MULT,
   // Types
-  type SurfaceType,
   type RaceStats,
   type RocketStartTier,
-  type DriftCharge,
-  type DriftDirection,
   type DriftState,
   type HazardState,
   type ItemBoxState,
@@ -137,7 +84,6 @@ import {
   type KartJoinedEvent,
   type KartLeftEvent,
   type KartState,
-  type KartStatus,
   type ItemPickedUpEvent,
   type ItemUsedEvent,
   type LapCompletedEvent,
@@ -155,19 +101,52 @@ import {
   type ReadyStateEvent,
   type RematchVoteEvent,
   type RaceToastEvent,
+  type ItemDestroyedEvent,
+  type RoomSettings,
   type TrackId,
+  type BotDifficulty,
+  type RaceMode,
+  LAP_COUNT_MIN,
+  LAP_COUNT_MAX,
+  MAX_RACE_ROOM_NAME_LEN,
+  BOT_BASE_SPEED_MULT,
+  BOT_RUBBERBAND_RANGE,
+  BOT_NAMES,
+  DEFAULT_BOT_DIFFICULTY,
+  DEFAULT_RACE_MODE,
 } from "../../racing/types.js";
-import { coerceRaceCarId } from "../../racing/car-catalog.js";
+import {
+  coerceRaceCarId,
+  getCarStats,
+  CURATED_RACE_CARS,
+} from "../../racing/car-catalog.js";
+import {
+  computeBotInput,
+  createBotSimState,
+  type BotSimState,
+  type BotContext,
+} from "../../racing/bot-driver.js";
 import {
   getTrack,
+  getTrackMeta,
+  coerceTrackId,
   findNearestSegment,
   getLateralOffset,
   isOnRoad,
-  isInBoostZone,
-  getRespawnPosition,
+} from "../../racing/track.js";
+import { getMeshRacingLine } from "../../racing/track-racing-line.js";
+// Server-only road-mesh sampling. Importing this module also registers the
+// track1 surface sampler into track.ts's seam, so the shared physics step can
+// reach the baked mesh on the server (the client never imports it).
+import {
   sampleRoadHeight,
   sampleRoadDistance,
-} from "../../racing/track.js";
+} from "../../racing/track-heightfield.js";
+import {
+  createKartSimState,
+  stepKart,
+  type KartSimState,
+} from "../../racing/kart-physics.js";
 
 // ---------------------------------------------------------------------------
 // Connection types
@@ -176,43 +155,46 @@ import {
 interface ConnParams {
   playerName: string;
   carId: string;
+  /** Persistent client identity (localStorage UUID) used for reconnect grace */
+  playerToken?: string;
+  /**
+   * Room configuration sent by the player who created the room. Applied once,
+   * by the first player to connect to a fresh (waiting, unconfigured) room.
+   * Later connections — and reconnects — carry it harmlessly: the actor only
+   * honors it while the room is still on defaults and waiting.
+   */
+  roomSettings?: Partial<RoomSettings>;
+  /** Optional player-chosen room name, surfaced to the lobby + HUD */
+  roomName?: string;
 }
 
-interface ConnState {
+/**
+ * Per-connection state. Extends KartSimState — the sim bookkeeping the shared
+ * physics step (stepKart) reads/writes — with server-only concerns: identity,
+ * input plumbing, ready/spectator flags, rocket-start tracking and the
+ * slipstream charge counter (driven by slipstreamTick, not stepKart).
+ */
+interface ConnState extends KartSimState {
   playerId: string;
   playerName: string;
   carId: string;
   accentIndex: number;
+  /** Client-provided identity token; empty when the client sent none */
+  playerToken: string;
   input: KartInput;
   lastInputAt: number;
+  /** Newest client input seq applied — echoed per kart in snapshots */
+  lastProcessedSeq: number;
   // Ready state
   ready: boolean;
   // Spectator mode
   spectator: boolean;
-  // Improved turn curve — counter-steer detection
-  lastSteerDirection: number;
-  // Snap steering
-  steerInputTicks: number;
-  prevSteerSign: number;
-  // Slipstream
+  // Slipstream charge (the bonus ticks live on KartSimState)
   slipstreamTicks: number;
-  slipstreamBonusTicks: number;
   // Rocket start
-  accelerateHeldSince: number; // tick counter when throttle was first held during countdown; -1 if not held
+  throttleFirstHeldTick: number; // tick the current continuous throttle hold began; -1 when not held
+  throttleLastPressTick: number; // tick of the most recent throttle press during countdown; -1 if never pressed
   rocketStartFired: boolean;
-  // Hit immunity
-  immunityTicks: number;
-  // Drift release grace
-  driftReleaseGraceTicks: number;
-  driftReleaseGraceCharge: DriftCharge;
-  // Hitstop pending data
-  hitstopPendingSpeed: number;
-  hitstopPendingDrift: boolean;
-  // Surface / grip-budget
-  dustCarryoverTicks: number;
-  prevElevation: number;
-  airborne: boolean;
-  prevSegIdx: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -249,12 +231,14 @@ function createKart(
   accentIndex: number,
   position: Vec3,
   heading: number,
+  isBot = false,
 ): KartState {
   return {
     id,
     name,
     carId: coerceRaceCarId(carId),
     accentIndex,
+    isBot,
     position: plainVec3(position),
     heading,
     speed: 0,
@@ -264,9 +248,11 @@ function createKart(
     checkpoint: 0,
     currentItem: null,
     itemCharges: 0,
+    heldItemActive: false,
     status: "normal",
     statusTimer: 0,
     raceProgress: 0,
+    segmentIndex: 0,
     finishTime: null,
     finishPosition: null,
     boostTimer: 0,
@@ -282,8 +268,12 @@ function createKart(
   };
 }
 
-/** Generate initial item boxes from the track definition */
-function generateItemBoxes(trackId: TrackId): ItemBoxState[] {
+/**
+ * Generate initial item boxes from the track definition. Honors itemsEnabled —
+ * an items-off room has no boxes (and rollItem is never reached as a result).
+ */
+function generateItemBoxes(trackId: TrackId, itemsEnabled: boolean): ItemBoxState[] {
+  if (!itemsEnabled) return [];
   const track = getTrack(trackId);
   const boxes: ItemBoxState[] = [];
   let boxId = 0;
@@ -298,6 +288,119 @@ function generateItemBoxes(trackId: TrackId): ItemBoxState[] {
     }
   }
   return boxes;
+}
+
+/** Clamp a lap count to the selectable range; fall back to the default. */
+function clampLapCount(value: unknown): number {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n)) return RACE_LAP_COUNT;
+  return Math.max(LAP_COUNT_MIN, Math.min(LAP_COUNT_MAX, n));
+}
+
+/** Coerce an arbitrary value to a valid bot difficulty tier. */
+function coerceBotDifficulty(value: unknown): BotDifficulty {
+  return value === "easy" || value === "medium" || value === "hard"
+    ? value
+    : DEFAULT_BOT_DIFFICULTY;
+}
+
+/** Coerce an arbitrary value to a valid race mode. */
+function coerceRaceMode(value: unknown): RaceMode {
+  return value === "timeTrial" || value === "race" ? value : DEFAULT_RACE_MODE;
+}
+
+/**
+ * Apply player-chosen room settings to a fresh (waiting, unconfigured) room.
+ * The trackId determines start grid / checkpoints, so it must be set before
+ * any kart is created — hence this runs in createConnState (before onConnect's
+ * addKartForConn). Re-generates item boxes for the chosen track.
+ */
+function applyRoomSettings(
+  c: any,
+  settings: Partial<RoomSettings> | undefined,
+  roomName: string | undefined,
+): void {
+  const state = c.state as RaceRoomState;
+
+  // Only the first player configures the room — once a kart exists or the
+  // room has left waiting, the configuration is locked.
+  if (c.vars) {
+    if (c.vars.configured) return;
+    c.vars.configured = true;
+  }
+  if (state.phase !== "waiting") return;
+  if (Object.keys(state.players).length > 0) return;
+
+  if (settings) {
+    if (settings.trackId !== undefined) {
+      state.trackId = coerceTrackId(settings.trackId);
+    }
+    if (settings.mode !== undefined) {
+      state.mode = coerceRaceMode(settings.mode);
+    }
+    if (settings.lapCount !== undefined) {
+      state.lapCount = clampLapCount(settings.lapCount);
+    }
+    if (settings.itemsEnabled !== undefined) {
+      state.itemsEnabled = Boolean(settings.itemsEnabled);
+    }
+    if (settings.botsEnabled !== undefined) {
+      state.botsEnabled = Boolean(settings.botsEnabled);
+    }
+    if (settings.botDifficulty !== undefined) {
+      state.botDifficulty = coerceBotDifficulty(settings.botDifficulty);
+    }
+  }
+
+  // A player-supplied room name wins; otherwise default to the track name so
+  // the HUD/lobby never show the stale "Track 1" placeholder.
+  const trimmedName =
+    typeof roomName === "string"
+      ? roomName.trim().slice(0, MAX_RACE_ROOM_NAME_LEN)
+      : "";
+  state.name = trimmedName || getTrackMeta(state.trackId).displayName;
+
+  // Rebuild the box layout for the (possibly new) track + items toggle.
+  state.itemBoxes = generateItemBoxes(state.trackId, state.itemsEnabled);
+}
+
+/**
+ * Scrub a non-"waiting" room with an empty roster back to a fresh waiting
+ * room. Rivet actors are durable, so a room that finished (or stalled mid
+ * countdown/racing) and then lost every racer would otherwise persist with a
+ * stale phase and force every future joiner into spectator mode forever — the
+ * "RACE OVER / SPECTATING / 0 racers" ghost-room bug. Resetting `configured`
+ * lets the next first player re-pick track / laps / items. Shared by
+ * createConnState (recovery on join) and removePlayer (scrub when the last
+ * racer leaves with no one left to promote) so the two never drift.
+ *
+ * Returns true when it actually performed a reset.
+ */
+function recoverGhostRoom(c: any): boolean {
+  const state = c.state as RaceRoomState;
+  if (state.phase === "waiting") return false;
+  // Bots are not racers — a durable room holding only ghost bots (every human
+  // gone) is still recoverable. Drop them so the roster reads as empty.
+  if (getHumanKartCount(c) > 0) return false;
+  clearBots(c);
+  if (Object.keys(state.players).length > 0) return false;
+
+  state.phase = "waiting";
+  state.phaseStartedAt = Date.now();
+  state.raceTimer = 0;
+  state.positions = [];
+  state.finishedCount = 0;
+  state.projectiles = [];
+  state.hazards = [];
+  state.readyPlayers = {};
+  state.rematchVotes = {};
+  state.stats = {};
+  // The next first player re-configures the room from scratch — reset the mode
+  // too so a recovered time-trial ghost room doesn't strand a plain joiner in
+  // a bot-less / item-stripped session they never asked for.
+  state.mode = DEFAULT_RACE_MODE;
+  if (c.vars) c.vars.configured = false;
+  return true;
 }
 
 /** Reset all karts to grid positions for race start */
@@ -319,6 +422,7 @@ function resetForRaceStart(c: any): void {
     kart.status = "normal";
     kart.statusTimer = 0;
     kart.raceProgress = 0;
+    kart.segmentIndex = findNearestSegment(track.segments, gridPos.x, gridPos.z);
     kart.finishTime = null;
     kart.finishPosition = null;
     kart.boostTimer = 0;
@@ -335,7 +439,7 @@ function resetForRaceStart(c: any): void {
   // Reset items on track
   c.state.projectiles = [];
   c.state.hazards = [];
-  c.state.itemBoxes = generateItemBoxes(c.state.trackId);
+  c.state.itemBoxes = generateItemBoxes(c.state.trackId, c.state.itemsEnabled);
   c.state.finishedCount = 0;
   c.state.positions = playerIds;
   c.state.rematchVotes = {};
@@ -351,12 +455,14 @@ function resetForRaceStart(c: any): void {
     const cs = conn.state as ConnState;
     cs.slipstreamTicks = 0;
     cs.slipstreamBonusTicks = 0;
-    cs.accelerateHeldSince = -1;
+    cs.throttleFirstHeldTick = -1;
+    cs.throttleLastPressTick = -1;
     cs.rocketStartFired = false;
     cs.immunityTicks = 0;
     cs.steerInputTicks = 0;
     cs.prevSteerSign = 0;
     cs.lastSteerDirection = 0;
+    cs.counterSteerTicks = 0;
     cs.driftReleaseGraceTicks = 0;
     cs.driftReleaseGraceCharge = 0;
     cs.hitstopPendingSpeed = 0;
@@ -364,7 +470,7 @@ function resetForRaceStart(c: any): void {
     cs.dustCarryoverTicks = 0;
     cs.prevElevation = 0;
     cs.airborne = false;
-    cs.prevSegIdx = 0;
+    cs.inBoostZone = false;
   }
 }
 
@@ -373,19 +479,32 @@ function rollItem(
   state: RaceRoomState,
   kartId: string,
 ): { item: ItemType; charges: number } {
+  // Time trial swaps the whole item table for a mushroom-only rotation — the
+  // mode is about the clock + the ghost, so offensive/trap items (with nobody
+  // to hit) would only break a clean lap. triMushroom keeps a little variety.
+  if (state.mode === "timeTrial") {
+    return Math.random() < 0.2
+      ? { item: "triMushroom", charges: 3 }
+      : { item: "mushroom", charges: 1 };
+  }
+
   const positions = state.positions;
   const karts = Object.values(state.players) as KartState[];
   const activeKarts = karts.filter((k) => k.finishTime === null);
 
   if (activeKarts.length <= 1) {
-    // Solo / only player — default to old behavior with pos 0
-    return rollItemLegacy(0);
+    // Solo / only player — boost-weighted table (shells/traps are dead
+    // weight with nobody to hit)
+    return rollItemSolo();
   }
 
+  // Finished karts still occupy `positions`, so the raw index can exceed the
+  // active-kart denominator — clamp so the lerp weights never extrapolate.
   const posIdx = positions.indexOf(kartId);
-  const positionRatio = activeKarts.length > 1
-    ? Math.max(0, posIdx) / (activeKarts.length - 1)
-    : 0; // 0 = leader, 1 = last
+  const positionRatio = Math.min(
+    1,
+    Math.max(0, posIdx) / (activeKarts.length - 1),
+  ); // 0 = leader, 1 = last
 
   // Compute distance spread for blue shell threshold
   let leadProgress = 0;
@@ -436,23 +555,27 @@ function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 
-/** Legacy item roll (fallback, position-index based) */
-function rollItemLegacy(positionIndex: number): { item: ItemType; charges: number } {
-  const clampedPos = Math.min(positionIndex, 3) as 0 | 1 | 2 | 3;
-  const entries = Object.entries(ITEM_PROBABILITIES) as [ItemType, [number, number, number, number]][];
+/** Solo-play item weights — mushroom-heavy so lone laps stay fun */
+const SOLO_ITEM_WEIGHTS: [ItemType, number][] = [
+  ["mushroom", 50],
+  ["triMushroom", 25],
+  ["star", 10],
+  ["greenShell", 8],
+  ["banana", 7],
+];
+
+/** Item roll for solo play (no opponents → no offensive/rubber-band table) */
+function rollItemSolo(): { item: ItemType; charges: number } {
   let totalWeight = 0;
-  for (const [, weights] of entries) {
-    totalWeight += weights[clampedPos];
-  }
+  for (const [, w] of SOLO_ITEM_WEIGHTS) totalWeight += w;
   let roll = Math.random() * totalWeight;
-  for (const [item, weights] of entries) {
-    roll -= weights[clampedPos];
+  for (const [item, w] of SOLO_ITEM_WEIGHTS) {
+    roll -= w;
     if (roll <= 0) {
-      const charges = item === "triMushroom" ? 3 : 1;
-      return { item, charges };
+      return { item, charges: item === "triMushroom" ? 3 : 1 };
     }
   }
-  return { item: "greenShell", charges: 1 };
+  return { item: "mushroom", charges: 1 };
 }
 
 // ---------------------------------------------------------------------------
@@ -462,12 +585,28 @@ function rollItemLegacy(positionIndex: number): { item: ItemType; charges: numbe
 async function notifyLobby(
   c: any,
   roomId: string,
-  patch: { playerCount: number; status: "waiting" | "playing" } | null,
+  patch: { playerCount: number; status: "waiting" | "racing" } | null,
 ): Promise<void> {
+  // Time-trial rooms are private solo sessions (deep-link only) — never list
+  // them on the public lobby board, so no one can stumble in to "spectate" a
+  // ghost run. A delist (patch === null) still runs in case the room mode was
+  // flipped after a prior registration.
+  if ((c.state as RaceRoomState).mode === "timeTrial" && patch) return;
   try {
     const lobbyActor = c.getActor({ name: "lobby", key: ["main"] });
     if (patch) {
-      await lobbyActor.updateRoom(roomId, patch);
+      const state = c.state as RaceRoomState;
+      // Include name/game so the lobby can upsert a room it no longer knows
+      // about (e.g. after the finish path deregistered it), plus the chosen
+      // track + lap count so lobby cards stay truthful.
+      await lobbyActor.updateRoom(roomId, {
+        ...patch,
+        name: state.name,
+        game: "race",
+        trackId: state.trackId,
+        trackName: getTrackMeta(state.trackId).displayName,
+        lapCount: state.lapCount,
+      });
     } else {
       await lobbyActor.removeRoom(roomId);
     }
@@ -476,7 +615,12 @@ async function notifyLobby(
   }
 }
 
+/** How often an occupied room refreshes its lobby registration */
+const LOBBY_HEARTBEAT_INTERVAL = 60_000;
+
 async function ensureLobbyRegistration(c: any): Promise<void> {
+  // Private solo time-trial rooms stay off the public lobby board.
+  if ((c.state as RaceRoomState).mode === "timeTrial") return;
   try {
     const lobbyActor = c.getActor({ name: "lobby", key: ["main"] });
     await lobbyActor.registerRoom(c.state.id, c.state.name, "race");
@@ -526,15 +670,444 @@ function tryStartCountdown(c: any): void {
     state.phase = "countdown";
     state.phaseStartedAt = Date.now();
     state.raceTimer = 0;
+    // Fill any empty grid slots with CPU opponents BEFORE the grid reset so the
+    // bots are placed on the start grid alongside the humans.
+    fillBots(c);
     resetForRaceStart(c);
+    // Anchor rocket-start timing to the tick the countdown (first beep) began
+    if (c.vars) c.vars.countdownStartTick = c.vars.tick;
     notifyLobby(c, state.id, {
       playerCount: nonSpectators,
-      status: "playing",
+      status: "racing",
     });
     c.broadcast("phaseChanged", {
       phase: state.phase,
       raceTimer: state.raceTimer,
     });
+    // Sync the freshly reset grid immediately so rematch clients don't render
+    // stale positions while waiting for the next paced snapshot.
+    broadcastSnapshot(c, c.vars?.tick ?? 0);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle helpers — roster, reconnect grace, waiting transition
+// ---------------------------------------------------------------------------
+
+/** Lowest accent index not used by any current player */
+function pickAccentIndex(state: RaceRoomState): number {
+  const used = new Set<number>();
+  for (const k of Object.values(state.players) as KartState[]) {
+    used.add(k.accentIndex);
+  }
+  for (let i = 0; i < RACE_MAX_PLAYERS; i++) {
+    if (!used.has(i)) return i;
+  }
+  return Object.keys(state.players).length % RACE_MAX_PLAYERS;
+}
+
+/** Create a kart for a (non-spectator) connection and broadcast kartJoined */
+function addKartForConn(c: any, cs: ConnState): KartState | null {
+  const state = c.state as RaceRoomState;
+  const existingCount = Object.keys(state.players).length;
+  if (existingCount >= RACE_MAX_PLAYERS) return null;
+
+  const track = getTrack(state.trackId);
+  const gridPos = track.startPositions[existingCount] ?? track.startPositions[0];
+
+  const kart = createKart(
+    cs.playerId,
+    cs.playerName,
+    cs.carId,
+    cs.accentIndex,
+    gridPos,
+    track.startHeading,
+  );
+
+  state.players[cs.playerId] = kart;
+  c.broadcast("kartJoined", { kart });
+  return kart;
+}
+
+/** Promote spectator connections onto the grid while slots remain (waiting only) */
+function promoteSpectators(c: any): void {
+  const state = c.state as RaceRoomState;
+  if (state.phase !== "waiting") return;
+
+  for (const conn of c.conns.values()) {
+    if (Object.keys(state.players).length >= RACE_MAX_PLAYERS) break;
+    const cs = conn.state as ConnState;
+    if (!cs.spectator) continue;
+
+    cs.spectator = false;
+    cs.ready = false;
+    cs.accentIndex = pickAccentIndex(state);
+    const kart = addKartForConn(c, cs);
+    if (!kart) {
+      // Shouldn't happen (capacity checked above) — stay a spectator
+      cs.spectator = true;
+      continue;
+    }
+    c.broadcast("raceToast", {
+      text: `${cs.playerName} joined the grid!`,
+      color: "#44FF88",
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CPU bots — roster fill, per-kart sim state, teardown
+// ---------------------------------------------------------------------------
+
+/** A bot kart's playerId carries this prefix so lifecycle code can spot it. */
+const BOT_ID_PREFIX = "bot_";
+
+function isBotId(id: string): boolean {
+  return id.startsWith(BOT_ID_PREFIX);
+}
+
+/** How many human (connection-backed) karts are currently on the grid. */
+function getHumanKartCount(c: any): number {
+  const state = c.state as RaceRoomState;
+  let count = 0;
+  for (const id of Object.keys(state.players)) {
+    if (!isBotId(id)) count++;
+  }
+  return count;
+}
+
+/**
+ * The shared physics-step bookkeeping for a kart: the live ConnState for human
+ * karts, or the bot's `sim` for CPU karts. Both satisfy KartSimState (immunity,
+ * hitstop-pending, slipstream-bonus) so item/collision ticks treat bots and
+ * humans identically without needing a ConnState.
+ */
+function findSimStateForPlayer(c: any, playerId: string): KartSimState | null {
+  const human = findConnStateForPlayer(c, playerId);
+  if (human) return human;
+  const bot = c.vars?.bots?.[playerId];
+  return bot ? bot.sim : null;
+}
+
+/**
+ * Fill open grid slots with CPU bots up to RACE_MAX_PLAYERS. Called from
+ * tryStartCountdown right before the grid resets, so the new bots get reset to
+ * the grid alongside the humans. Honors state.botsEnabled. Bots never appear in
+ * conns — their sim state lives in c.vars.bots, keyed by playerId.
+ */
+function fillBots(c: any): void {
+  const state = c.state as RaceRoomState;
+  // Time trial is solo against the clock + ghost — never seat CPU opponents.
+  if (state.mode === "timeTrial") return;
+  if (!state.botsEnabled) return;
+  if (!c.vars) return;
+
+  const track = getTrack(state.trackId);
+  const cars = CURATED_RACE_CARS;
+  let nameIdx = 0;
+
+  while (Object.keys(state.players).length < RACE_MAX_PLAYERS) {
+    const slot = Object.keys(state.players).length;
+    const botId = `${BOT_ID_PREFIX}${uid()}`;
+    // Cycle the flavor pool; append a number once it wraps so names stay unique.
+    const baseName = BOT_NAMES[nameIdx % BOT_NAMES.length];
+    const name =
+      nameIdx < BOT_NAMES.length ? baseName : `${baseName} ${Math.floor(nameIdx / BOT_NAMES.length) + 1}`;
+    nameIdx++;
+    // Distinct car per bot (deterministic by slot) + an unused accent slot.
+    const carId = cars[slot % cars.length].id;
+    const accentIndex = pickAccentIndex(state);
+    const gridPos = track.startPositions[slot] ?? track.startPositions[0];
+
+    const kart = createKart(
+      botId,
+      name,
+      carId,
+      accentIndex,
+      gridPos,
+      track.startHeading,
+      true,
+    );
+    state.players[botId] = kart;
+    c.vars.bots[botId] = {
+      sim: createKartSimState(),
+      driver: createBotSimState(botId),
+    };
+    c.broadcast("kartJoined", { kart });
+  }
+}
+
+/** Remove every CPU bot from the room (roster + sim state + bookkeeping). */
+function clearBots(c: any): void {
+  const state = c.state as RaceRoomState;
+  for (const id of Object.keys(state.players)) {
+    if (!isBotId(id)) continue;
+    delete state.players[id];
+    if (c.vars?.bots) delete c.vars.bots[id];
+    delete state.stats[id];
+    delete state.rematchVotes[id];
+    delete state.readyPlayers[id];
+    state.positions = state.positions.filter((p: string) => p !== id);
+    state.projectiles = (state.projectiles as ProjectileState[]).filter(
+      (p) => p.ownerId !== id,
+    );
+    state.hazards = (state.hazards as HazardState[]).filter(
+      (h) => h.ownerId !== id,
+    );
+    c.broadcast("kartLeft", { kartId: id, kartName: "CPU" });
+  }
+}
+
+/**
+ * Fully remove a player's kart and run the phase-aware quorum logic.
+ * Called on immediate departures (waiting/finished), on reconnect-grace
+ * expiry, and when finalizing held disconnects during a waiting transition.
+ */
+function removePlayer(c: any, playerId: string, playerName: string): void {
+  const state = c.state as RaceRoomState;
+  if (!state.players[playerId]) return;
+
+  delete state.players[playerId];
+  c.broadcast("kartLeft", { kartId: playerId, kartName: playerName });
+
+  // Remove any projectiles/hazards owned by this player
+  state.projectiles = (state.projectiles as ProjectileState[]).filter(
+    (p) => p.ownerId !== playerId,
+  );
+  state.hazards = (state.hazards as HazardState[]).filter(
+    (h) => h.ownerId !== playerId,
+  );
+
+  // Clean up stats, votes, ready state, and any pending reconnect grace
+  delete state.stats[playerId];
+  delete state.rematchVotes[playerId];
+  delete state.readyPlayers[playerId];
+  state.positions = state.positions.filter((id) => id !== playerId);
+  if (c.vars?.disconnects) delete c.vars.disconnects[playerId];
+
+  // Bots don't count as racers for quorum/forfeit — a grid of "remaining" bots
+  // with no humans is an abandoned race, not a live one.
+  const humanCount = getHumanKartCount(c);
+  const remaining = Object.values(state.players) as KartState[];
+
+  if (humanCount === 0) {
+    if (state.phase !== "waiting" && (c.conns?.size ?? 0) > 0) {
+      // Spectators are still watching an abandoned race — reset the room so
+      // they get promoted onto the grid instead of being stuck forever.
+      transitionToWaiting(c, "All racers left — race reset");
+    } else {
+      // No human left to promote. Drop any bots, then scrub the race phase so
+      // the durable actor doesn't persist as "finished"/"countdown" (with a
+      // ghost bot grid) and force the next joiner to spectate (see
+      // recoverGhostRoom, also run on join). Delisted from the lobby either way.
+      clearBots(c);
+      recoverGhostRoom(c);
+      notifyLobby(c, state.id, null);
+    }
+    return;
+  }
+
+  switch (state.phase) {
+    case "waiting": {
+      // The leaver frees a grid slot and may have been the lone un-ready
+      // player — fill the slot and re-check the all-ready start condition.
+      promoteSpectators(c);
+      tryStartCountdown(c);
+      break;
+    }
+
+    case "countdown": {
+      if (remaining.length < 2) {
+        // Not enough racers to launch — return to waiting instead of the
+        // old instant zero-stat forfeit "win".
+        transitionToWaiting(c, "Not enough racers — back to the lobby");
+        return;
+      }
+      break;
+    }
+
+    case "racing": {
+      if (remaining.length < 2) {
+        // Forfeit — remaining player wins
+        state.phase = "finished";
+        state.phaseStartedAt = Date.now();
+        state.positions = remaining.map((k) => k.id);
+
+        const finishTimes: Record<string, number | null> = {};
+        for (const k of remaining) {
+          finishTimes[k.id] = k.finishTime;
+        }
+
+        c.broadcast("raceFinished", {
+          positions: state.positions,
+          finishTimes,
+          stats: state.stats,
+        });
+        c.broadcast("phaseChanged", {
+          phase: "finished",
+          raceTimer: state.raceTimer,
+        });
+        notifyLobby(c, state.id, null);
+        return;
+      }
+      break;
+    }
+
+    case "finished": {
+      // The leaver may have been the lone missing rematch vote
+      evaluateRematch(c, true);
+      // evaluateRematch may have reset to waiting and already notified
+      if ((c.state as RaceRoomState).phase === "waiting") return;
+      break;
+    }
+  }
+
+  notifyLobby(c, state.id, {
+    playerCount: remaining.length,
+    status: state.phase === "waiting" ? "waiting" : "racing",
+  });
+}
+
+/**
+ * Tally rematch votes against connected non-spectators and reset the room to
+ * waiting once everyone still here has voted. Shared by the voteRematch
+ * action and disconnect handling (a leaver can complete the quorum).
+ */
+function evaluateRematch(c: any, broadcastTally: boolean): void {
+  const state = c.state as RaceRoomState;
+  if (state.phase !== "finished") return;
+
+  const connectedNonSpectators: string[] = [];
+  for (const conn of c.conns.values()) {
+    const cs = conn.state as ConnState;
+    if (!cs.spectator) connectedNonSpectators.push(cs.playerId);
+  }
+
+  const needed = connectedNonSpectators.length;
+  let voteCount = 0;
+  for (const pid of connectedNonSpectators) {
+    if (state.rematchVotes[pid]) voteCount++;
+  }
+
+  if (broadcastTally) {
+    c.broadcast("rematchVote", {
+      votes: { ...state.rematchVotes },
+      voteCount,
+      needed,
+    });
+  }
+
+  // If all connected players voted yes, reset to waiting
+  if (voteCount >= needed && needed > 0) {
+    transitionToWaiting(c, "Rematch! Waiting for players to ready up...");
+  }
+}
+
+/**
+ * The single path back into the waiting phase (rematch, finish auto-reset,
+ * countdown quorum loss). Clears race bookkeeping, finalizes lingering
+ * disconnect grace, promotes spectators onto open grid slots, resets karts to
+ * the grid, and re-registers the room with the lobby.
+ */
+function transitionToWaiting(c: any, toastText: string | null): void {
+  const state = c.state as RaceRoomState;
+
+  state.phase = "waiting";
+  state.phaseStartedAt = Date.now();
+  state.raceTimer = 0;
+  state.rematchVotes = {};
+  state.stats = {};
+  state.readyPlayers = {};
+
+  for (const conn of c.conns.values()) {
+    (conn.state as ConnState).ready = false;
+  }
+
+  // Reconnect grace only preserves identity within a single race — finalize
+  // any departures still pending so they don't hold grid slots in the lobby.
+  const disconnects = c.vars?.disconnects as
+    | Record<string, { token: string; deadline: number }>
+    | undefined;
+  if (disconnects) {
+    for (const playerId of Object.keys(disconnects)) {
+      const kart = state.players[playerId] as KartState | undefined;
+      delete disconnects[playerId];
+      if (kart) removePlayer(c, playerId, kart.name);
+    }
+  }
+
+  // Bots are race-scoped fill — drop them when returning to the lobby so they
+  // free grid slots for any waiting spectators (and are re-filled fresh at the
+  // next countdown). This also keeps the rematch/auto-reset roster human-only.
+  clearBots(c);
+
+  // Fill open grid slots from the spectator bench
+  promoteSpectators(c);
+
+  // Fresh grid + cleared race artifacts for the waiting room
+  resetForRaceStart(c);
+
+  c.broadcast("phaseChanged", {
+    phase: "waiting",
+    raceTimer: 0,
+  });
+  if (toastText) {
+    c.broadcast("raceToast", { text: toastText, color: "#44AAFF" });
+  }
+  // Sync the reset grid immediately — the waiting phase has no paced snapshots.
+  broadcastSnapshot(c, c.vars?.tick ?? 0);
+
+  // The finish path deregistered this room — put it back on the lobby board.
+  ensureLobbyRegistration(c);
+  notifyLobby(c, state.id, {
+    playerCount: getNonSpectatorCount(c),
+    status: "waiting",
+  });
+}
+
+/**
+ * Reconnect grace bookkeeping, run every server tick: expire abandoned karts
+ * (finalizing their departure) and coast held karts to a stop — the physics
+ * tick iterates connections, so a disconnected kart gets no integration here
+ * otherwise.
+ */
+function disconnectGraceTick(c: any, now: number, dt: number): void {
+  const disconnects = c.vars?.disconnects as
+    | Record<string, { token: string; deadline: number }>
+    | undefined;
+  if (!disconnects) return;
+
+  const state = c.state as RaceRoomState;
+
+  for (const [playerId, info] of Object.entries(disconnects)) {
+    const kart = state.players[playerId] as KartState | undefined;
+    if (!kart) {
+      delete disconnects[playerId];
+      continue;
+    }
+
+    if (now >= info.deadline) {
+      // Grace expired — finalize the departure (kartLeft + quorum logic)
+      delete disconnects[playerId];
+      removePlayer(c, playerId, kart.name);
+      continue;
+    }
+
+    if (
+      state.phase === "racing" &&
+      kart.finishTime === null &&
+      kart.hitstopTicks <= 0 &&
+      kart.status !== "falling"
+    ) {
+      // No driver — bleed speed and roll forward along the current heading
+      kart.speed *= Math.pow(0.96, dt);
+      if (Math.abs(kart.speed) < 0.005) kart.speed = 0;
+      const vx = Math.sin(kart.heading) * kart.speed;
+      const vz = Math.cos(kart.heading) * kart.speed;
+      kart.position.x += vx * dt;
+      kart.position.z += vz * dt;
+      kart.velocity = { x: vx, y: 0, z: vz };
+    }
   }
 }
 
@@ -545,13 +1118,17 @@ function tryStartCountdown(c: any): void {
 export const raceRoom = actor({
   createState: (c: any): RaceRoomState => ({
     id: c.key?.[0] ?? `race_${Date.now().toString(36)}`,
-    name: "Track 1",
+    name: getTrackMeta("track1").displayName,
     players: {},
     projectiles: [],
     hazards: [],
-    itemBoxes: generateItemBoxes("track1"),
+    itemBoxes: generateItemBoxes("track1", true),
     phase: "waiting" as RacePhase,
+    mode: DEFAULT_RACE_MODE,
     lapCount: RACE_LAP_COUNT,
+    itemsEnabled: true,
+    botsEnabled: true,
+    botDifficulty: DEFAULT_BOT_DIFFICULTY,
     raceTimer: 0,
     maxPlayers: RACE_MAX_PLAYERS,
     trackId: "track1",
@@ -559,13 +1136,82 @@ export const raceRoom = actor({
     phaseStartedAt: Date.now(),
     positions: [],
     finishedCount: 0,
-    readyPlayers: [],
+    readyPlayers: {},
     rematchVotes: {},
     stats: {},
   }),
 
   createConnState: (c: any, params: ConnParams): ConnState => {
     const state = c.state as RaceRoomState;
+
+    // Ghost-room recovery FIRST. Rivet actors are durable, so a room that
+    // finished (or stalled in countdown) and then lost every racer persists
+    // with a non-"waiting" phase and an empty roster. This must run before
+    // applyRoomSettings: that helper only applies the joiner's chosen track /
+    // laps / items while the room is "waiting" — so a recovering joiner would
+    // otherwise silently lose their settings (and inherit the dead room's
+    // name). recoverGhostRoom flips the phase back to "waiting" and clears
+    // `configured`, making the room genuinely fresh for this first player.
+    recoverGhostRoom(c);
+
+    // The first player to reach a fresh waiting room configures it (track, lap
+    // count, items, name). Must happen before any kart is created, because the
+    // chosen track determines the start grid and checkpoints.
+    applyRoomSettings(c, params.roomSettings, params.roomName);
+
+    const playerToken =
+      typeof params.playerToken === "string"
+        ? params.playerToken.slice(0, 64)
+        : "";
+
+    const baseConnState = {
+      // Shared physics-step bookkeeping (counter-steer, snap steering, drift
+      // grace, dust, airborne, slipstream bonus, ...)
+      ...createKartSimState(),
+      playerToken,
+      input: {
+        steering: 0,
+        throttle: false,
+        brake: false,
+        drift: false,
+        useItem: false,
+        heldBehind: false,
+        seq: 0,
+      },
+      lastInputAt: 0,
+      lastProcessedSeq: 0,
+      ready: false,
+      slipstreamTicks: 0,
+      throttleFirstHeldTick: -1,
+      throttleLastPressTick: -1,
+      rocketStartFired: false,
+    };
+
+    // Reconnect grace: a returning connection presenting the token of a
+    // recently dropped player re-adopts their kart — same playerId and NOT
+    // a spectator, even while the race is running.
+    if (playerToken && c.vars?.disconnects) {
+      const now = Date.now();
+      const disconnects = c.vars.disconnects as Record<
+        string,
+        { token: string; deadline: number }
+      >;
+      for (const [playerId, info] of Object.entries(disconnects)) {
+        if (info.token !== playerToken || info.deadline < now) continue;
+        const kart = state.players[playerId] as KartState | undefined;
+        if (!kart) continue;
+        delete disconnects[playerId];
+        return {
+          ...baseConnState,
+          playerId,
+          playerName: kart.name,
+          carId: kart.carId,
+          accentIndex: kart.accentIndex,
+          spectator: false,
+        };
+      }
+    }
+
     const playerCount = Object.keys(state.players).length;
 
     // Once a room leaves the waiting phase, late joiners can only spectate.
@@ -575,35 +1221,31 @@ export const raceRoom = actor({
       throw new Error("Room is full");
     }
 
-    const playerId = `k_${uid()}`;
-    const accentIndex = Math.max(0, playerCount % RACE_MAX_PLAYERS);
     return {
-      playerId,
+      ...baseConnState,
+      playerId: `k_${uid()}`,
       playerName: sanitizeName(params.playerName),
       carId: coerceRaceCarId(params.carId),
-      accentIndex,
-      input: { steering: 0, throttle: false, brake: false, drift: false, useItem: false },
-      lastInputAt: 0,
-      ready: false,
+      // Lowest unused accent so leavers/joiners never collide on a color slot
+      accentIndex: pickAccentIndex(state),
       spectator: isSpectator,
-      lastSteerDirection: 0,
-      steerInputTicks: 0,
-      prevSteerSign: 0,
-      slipstreamTicks: 0,
-      slipstreamBonusTicks: 0,
-      accelerateHeldSince: -1,
-      rocketStartFired: false,
-      immunityTicks: 0,
-      driftReleaseGraceTicks: 0,
-      driftReleaseGraceCharge: 0,
-      hitstopPendingSpeed: 0,
-      hitstopPendingDrift: false,
-      dustCarryoverTicks: 0,
-      prevElevation: 0,
-      airborne: false,
-      prevSegIdx: 0,
     };
   },
+
+  // Ephemeral per-instance sim bookkeeping (never persisted): the current sim
+  // tick, the tick the active countdown began (rocket-start timing anchor),
+  // and the reconnect-grace ledger (playerId → token + expiry).
+  createVars: () => ({
+    tick: 0,
+    countdownStartTick: 0,
+    disconnects: {} as Record<string, { token: string; deadline: number }>,
+    // Latched once the first player has configured the room (track/laps/items).
+    configured: false,
+    // CPU bot bookkeeping, keyed by the bot's playerId. `sim` is the shared
+    // physics-step state (immunity, hitstop, slipstream) so bots run through
+    // the SAME stepKart humans do; `driver` is the AI personality/timers.
+    bots: {} as Record<string, { sim: KartSimState; driver: BotSimState }>,
+  }),
 
   events: {
     kartJoined: event<KartJoinedEvent>(),
@@ -622,6 +1264,7 @@ export const raceRoom = actor({
     readyStateChanged: event<ReadyStateEvent>(),
     rematchVote: event<RematchVoteEvent>(),
     raceToast: event<RaceToastEvent>(),
+    itemDestroyed: event<ItemDestroyedEvent>(),
   },
 
   onBeforeConnect: (c: any) => {
@@ -637,7 +1280,6 @@ export const raceRoom = actor({
 
   onConnect: (c: any, conn: any) => {
     const cs = conn.state as ConnState;
-    const { playerId, playerName, carId, accentIndex } = cs;
     const state = c.state as RaceRoomState;
 
     // Spectators don't get a kart
@@ -645,26 +1287,24 @@ export const raceRoom = actor({
       return;
     }
 
-    const existingCount = Object.keys(state.players).length;
-    if (existingCount >= RACE_MAX_PLAYERS) {
-      conn.close?.();
+    // Reconnect within grace — the kart never left; just re-arm its driver.
+    if (state.players[cs.playerId]) {
+      c.broadcast("raceToast", {
+        text: `${cs.playerName} reconnected!`,
+        color: "#44FF88",
+      });
+      notifyLobby(c, state.id, {
+        playerCount: Object.keys(state.players).length,
+        status: state.phase === "waiting" ? "waiting" : "racing",
+      });
       return;
     }
 
-    const track = getTrack(state.trackId);
-    const gridPos = track.startPositions[existingCount] ?? track.startPositions[0];
-
-    const kart = createKart(
-      playerId,
-      playerName,
-      carId,
-      accentIndex,
-      gridPos,
-      track.startHeading,
-    );
-
-    state.players[playerId] = kart;
-    c.broadcast("kartJoined", { kart });
+    const kart = addKartForConn(c, cs);
+    if (!kart) {
+      conn.close?.();
+      return;
+    }
 
     const playerCount = Object.keys(state.players).length;
 
@@ -674,69 +1314,48 @@ export const raceRoom = actor({
 
     notifyLobby(c, state.id, {
       playerCount,
-      status: state.phase === "waiting" ? "waiting" : "playing",
+      status: state.phase === "waiting" ? "waiting" : "racing",
     });
   },
 
   onDisconnect: (c: any, conn: any) => {
     const cs = conn.state as ConnState;
     const { playerId, playerName } = cs;
+    const state = c.state as RaceRoomState;
 
     // Spectators just leave
     if (cs.spectator) return;
 
-    if (!c.state.players[playerId]) return;
+    if (!state.players[playerId]) return;
 
-    delete c.state.players[playerId];
-    c.broadcast("kartLeft", { kartId: playerId, kartName: playerName });
-
-    // Remove any projectiles/hazards owned by this player
-    c.state.projectiles = (c.state.projectiles as ProjectileState[]).filter(
-      (p) => p.ownerId !== playerId,
-    );
-    c.state.hazards = (c.state.hazards as HazardState[]).filter(
-      (h) => h.ownerId !== playerId,
-    );
-
-    // Clean up stats and rematch votes
-    delete c.state.stats[playerId];
-    delete c.state.rematchVotes[playerId];
-
-    const remaining = Object.values(c.state.players) as KartState[];
-
+    // Mid-race drop: hold the kart for a reconnect grace window so a refresh
+    // or network blip doesn't forfeit the player's race. The kart coasts to
+    // a stop (disconnectGraceTick) and is re-adopted in createConnState when
+    // a connection with the same player token returns. Only on expiry does
+    // the departure finalize (kartLeft + quorum/forfeit logic).
     if (
-      remaining.length < 2 &&
-      c.state.phase !== "waiting" &&
-      c.state.phase !== "finished"
+      (state.phase === "racing" || state.phase === "countdown") &&
+      cs.playerToken &&
+      c.vars?.disconnects
     ) {
-      // Forfeit — remaining player wins
-      c.state.phase = "finished";
-      c.state.phaseStartedAt = Date.now();
-
-      const positions = remaining.map((k) => k.id);
-      const finishTimes: Record<string, number | null> = {};
-      for (const k of remaining) {
-        finishTimes[k.id] = k.finishTime;
-      }
-
-      c.broadcast("raceFinished", {
-        positions,
-        finishTimes,
-        stats: c.state.stats,
+      c.vars.disconnects[playerId] = {
+        token: cs.playerToken,
+        deadline: Date.now() + RECONNECT_GRACE_MS,
+      };
+      const kart = state.players[playerId] as KartState;
+      kart.driftState = defaultDrift();
+      // The driverless ghost would otherwise keep heldItemActive=true (it's only
+      // recomputed for LIVE connections in kartPhysicsTick), turning the coasting
+      // kart into an invincible 12s rear shield. Clear it on the way out.
+      kart.heldItemActive = false;
+      c.broadcast("raceToast", {
+        text: `${playerName} disconnected — holding their kart`,
+        color: "#FFAA44",
       });
-      c.broadcast("phaseChanged", {
-        phase: "finished",
-        raceTimer: c.state.raceTimer,
-      });
-      notifyLobby(c, c.state.id, null);
-    } else if (remaining.length === 0) {
-      notifyLobby(c, c.state.id, null);
-    } else {
-      notifyLobby(c, c.state.id, {
-        playerCount: remaining.length,
-        status: c.state.phase === "waiting" ? "waiting" : "playing",
-      });
+      return;
     }
+
+    removePlayer(c, playerId, playerName);
   },
 
   // -----------------------------------------------------------------------
@@ -744,7 +1363,7 @@ export const raceRoom = actor({
   // -----------------------------------------------------------------------
 
   run: async (c: any) => {
-    let lastSnapshot = 0;
+    let lastSnapshot = Date.now();
     let tickCounter = 0;
     let lastTickTime = Date.now();
     let nextTickTarget = lastTickTime + RACE_SERVER_TICK_INTERVAL;
@@ -752,18 +1371,28 @@ export const raceRoom = actor({
     const EMPTY_TIMEOUT = 10_000;
     // Auto-start timer for waiting phase (30s with 2+ players)
     let waitingAutoStartAt: number | null = null;
+    // Periodic lobby heartbeat (the lobby evicts rooms silent for >5min)
+    let lastLobbyHeartbeat = Date.now();
 
     while (!c.aborted) {
       const now = Date.now();
       const dtMs = Math.min(now - lastTickTime, 50);
       const dt = dtMs / RACE_SERVER_TICK_INTERVAL;
       lastTickTime = now;
+      if (c.vars) c.vars.tick = tickCounter;
 
-      // Empty room auto-shutdown
+      // Empty room auto-shutdown. Never shut down while a disconnect grace
+      // window is pending — a solo racer refreshing the page must find the
+      // same actor (and kart) when they come back.
       const connCount = c.conns?.size ?? 0;
       if (connCount === 0) {
         if (!emptyAt) emptyAt = now;
-        if (c.state.phase === "finished" || now - emptyAt > EMPTY_TIMEOUT) {
+        const holdingReconnect =
+          c.vars?.disconnects && Object.keys(c.vars.disconnects).length > 0;
+        if (
+          !holdingReconnect &&
+          (c.state.phase === "finished" || now - emptyAt > EMPTY_TIMEOUT)
+        ) {
           notifyLobby(c, c.state.id, null);
           return;
         }
@@ -782,7 +1411,10 @@ export const raceRoom = actor({
             // Auto-start: force all players ready
             for (const conn of c.conns.values()) {
               const cs = conn.state as ConnState;
-              if (!cs.spectator) cs.ready = true;
+              if (!cs.spectator) {
+                cs.ready = true;
+                state.readyPlayers[cs.playerId] = true;
+              }
             }
             tryStartCountdown(c);
             waitingAutoStartAt = null;
@@ -802,30 +1434,56 @@ export const raceRoom = actor({
       // Phase management
       phaseTick(c, now, dtMs, tickCounter);
 
+      // Reconnect grace — expire abandoned karts, coast held ones
+      disconnectGraceTick(c, now, dt);
+
+      // Lobby heartbeat — refresh registration while occupied so the lobby's
+      // silence-based eviction never hides a live room. Skipped while
+      // finished: the room is intentionally delisted until it resets.
+      if (
+        connCount > 0 &&
+        state.phase !== "finished" &&
+        now - lastLobbyHeartbeat >= LOBBY_HEARTBEAT_INTERVAL
+      ) {
+        lastLobbyHeartbeat = now;
+        notifyLobby(c, state.id, {
+          playerCount: getNonSpectatorCount(c),
+          status: state.phase === "waiting" ? "waiting" : "racing",
+        });
+      }
+
       // Physics simulation when racing
       if (state.phase === "racing") {
         const track = getTrack(state.trackId);
-        kartPhysicsTick(c, dt, now, track, tickCounter);
+        kartPhysicsTick(c, dt, track);
+        botPhysicsTick(c, dt, track);
         slipstreamTick(c, track);
         kartCollisionTick(c, dt);
         projectileTick(c, dt, now, track);
         hazardTick(c, track);
         itemBoxTick(c, now, track);
         checkpointTick(c, track);
-        positionTick(c, track);
+        positionTick(c);
       }
 
-      // Broadcast snapshot at 20Hz
+      // Broadcast snapshot at 20Hz during countdown (grid sync) and racing
       if (
-        state.phase === "racing" &&
+        (state.phase === "racing" || state.phase === "countdown") &&
         now - lastSnapshot >= RACE_SNAPSHOT_INTERVAL
       ) {
-        lastSnapshot += RACE_SNAPSHOT_INTERVAL;
+        // Pace against the wall clock — after a hitch, emit at most one late
+        // snapshot instead of bursting one per 16ms tick to catch up.
+        lastSnapshot = Math.max(
+          lastSnapshot + RACE_SNAPSHOT_INTERVAL,
+          now - RACE_SNAPSHOT_INTERVAL,
+        );
         broadcastSnapshot(c, tickCounter);
       }
 
       tickCounter++;
       nextTickTarget += RACE_SERVER_TICK_INTERVAL;
+      // A stall must not spin a burst of 1ms catch-up sleeps — re-anchor to now
+      nextTickTarget = Math.max(nextTickTarget, now - RACE_SERVER_TICK_INTERVAL);
       const sleepMs = Math.max(1, nextTickTarget - Date.now());
       await new Promise((r) => setTimeout(r, sleepMs));
     }
@@ -848,7 +1506,11 @@ export const raceRoom = actor({
           hazards: s.hazards,
           itemBoxes: s.itemBoxes,
           phase: s.phase,
+          mode: s.mode,
           lapCount: s.lapCount,
+          itemsEnabled: s.itemsEnabled,
+          botsEnabled: s.botsEnabled,
+          botDifficulty: s.botDifficulty,
           raceTimer: s.raceTimer,
           maxPlayers: s.maxPlayers,
           trackId: s.trackId,
@@ -872,13 +1534,22 @@ export const raceRoom = actor({
       // Spectators can't send input
       if (connState.spectator) return;
 
-      const now = Date.now();
-      if (now - connState.lastInputAt < 30) return;
-      connState.lastInputAt = now;
+      // Always accept the newest input — dropping it would discard the most
+      // recent intent (a rate gate here punished well-behaved fast senders).
+      connState.lastInputAt = Date.now();
 
       // Validate input fields
       const steering = Number(input.steering);
       if (!Number.isFinite(steering)) return;
+
+      // Client prediction ack: track the newest seq this connection has
+      // delivered. It is echoed per kart in snapshots (lastProcessedSeq) so
+      // the client can drop acked inputs and replay only the rest.
+      const seq = Number(input.seq);
+      const validSeq = Number.isFinite(seq) ? Math.max(0, seq) : 0;
+      if (validSeq > connState.lastProcessedSeq) {
+        connState.lastProcessedSeq = validSeq;
+      }
 
       connState.input = {
         steering: Math.max(-1, Math.min(1, steering)),
@@ -887,6 +1558,10 @@ export const raceRoom = actor({
         drift: Boolean(input.drift),
         // Item usage is handled via the dedicated `useItem()` action to avoid double-firing.
         useItem: false,
+        // Rear-defense intent: carry "trail my held item" through the input
+        // stream (the fire still goes through useItem() on tap/release).
+        heldBehind: Boolean(input.heldBehind),
+        seq: validSeq,
       };
     },
 
@@ -898,6 +1573,11 @@ export const raceRoom = actor({
 
       const kart = c.state.players[connState.playerId] as KartState | undefined;
       if (!kart || !kart.currentItem) return;
+
+      // No item use after finishing, mid-hitstop, or while spun out/falling
+      if (kart.finishTime !== null) return;
+      if (kart.hitstopTicks > 0) return;
+      if (kart.status === "spinning" || kart.status === "falling") return;
 
       executeItemUse(c, kart, connState.playerId);
     },
@@ -912,6 +1592,13 @@ export const raceRoom = actor({
 
       // Toggle ready state
       connState.ready = !connState.ready;
+
+      // Keep the persisted roster truthful so getJoinState can hydrate it
+      if (connState.ready) {
+        state.readyPlayers[connState.playerId] = true;
+      } else {
+        delete state.readyPlayers[connState.playerId];
+      }
 
       const total = getNonSpectatorCount(c);
       const readyCount = getReadyCount(c);
@@ -934,56 +1621,10 @@ export const raceRoom = actor({
       const state = c.state as RaceRoomState;
       if (state.phase !== "finished") return;
 
-      // Record vote
+      // Record vote, then tally against connected non-spectators (shared
+      // with disconnect handling — a leaver can complete the quorum).
       state.rematchVotes[connState.playerId] = true;
-
-      const connectedNonSpectators: string[] = [];
-      for (const conn of c.conns.values()) {
-        const cs = conn.state as ConnState;
-        if (!cs.spectator) connectedNonSpectators.push(cs.playerId);
-      }
-
-      const needed = connectedNonSpectators.length;
-      let voteCount = 0;
-      for (const pid of connectedNonSpectators) {
-        if (state.rematchVotes[pid]) voteCount++;
-      }
-
-      c.broadcast("rematchVote", {
-        votes: { ...state.rematchVotes },
-        voteCount,
-        needed,
-      });
-
-      // If all connected players voted yes, reset to waiting
-      if (voteCount >= needed && needed > 0) {
-        state.phase = "waiting";
-        state.phaseStartedAt = Date.now();
-        state.raceTimer = 0;
-        state.rematchVotes = {};
-        state.stats = {};
-
-        // Reset ready state for all connections
-        for (const conn of c.conns.values()) {
-          const cs = conn.state as ConnState;
-          cs.ready = false;
-        }
-
-        c.broadcast("phaseChanged", {
-          phase: "waiting",
-          raceTimer: 0,
-        });
-
-        c.broadcast("raceToast", {
-          text: "Rematch! Waiting for players to ready up...",
-          color: "#44AAFF",
-        });
-
-        notifyLobby(c, state.id, {
-          playerCount: getNonSpectatorCount(c),
-          status: "waiting",
-        });
-      }
+      evaluateRematch(c, true);
     },
   },
 });
@@ -998,13 +1639,14 @@ function rocketStartCountdownTick(c: any, tickCounter: number): void {
     if (cs.spectator || cs.rocketStartFired) continue;
 
     if (cs.input.throttle) {
-      if (cs.accelerateHeldSince === -1) {
-        cs.accelerateHeldSince = tickCounter;
+      if (cs.throttleFirstHeldTick === -1) {
+        // New press — record when this continuous hold began
+        cs.throttleFirstHeldTick = tickCounter;
+        cs.throttleLastPressTick = tickCounter;
       }
     } else {
-      // Released throttle during countdown — note the release
-      // (accelerateHeldSince stays set so we know they pressed and released)
-      // No action here — the evaluation happens on phase transition
+      // Released — the next press starts a fresh hold
+      cs.throttleFirstHeldTick = -1;
     }
   }
 }
@@ -1015,6 +1657,7 @@ function rocketStartCountdownTick(c: any, tickCounter: number): void {
 
 function evaluateRocketStarts(c: any, goTick: number): void {
   const state = c.state as RaceRoomState;
+  const countdownStartTick = c.vars?.countdownStartTick ?? 0;
 
   for (const conn of c.conns.values()) {
     const cs = conn.state as ConnState;
@@ -1026,14 +1669,21 @@ function evaluateRocketStarts(c: any, goTick: number): void {
     if (!kart) continue;
 
     // If never pressed throttle during countdown, no rocket start
-    if (cs.accelerateHeldSince === -1) {
+    if (cs.throttleLastPressTick === -1) {
       kart.rocketStartTier = "none";
       continue;
     }
 
-    // If throttle was held continuously through GO (never released)
-    if (cs.input.throttle && cs.accelerateHeldSince < goTick - 1) {
-      // Stall penalty: held throttle through the entire countdown
+    // Stall ONLY when throttle has been held continuously since (before) the
+    // countdown's first beep — i.e. the current hold began within the first
+    // few ticks of the countdown. Pressing during the countdown and holding
+    // to GO is evaluated by timing below, never stalled.
+    const heldSinceFirstBeep =
+      cs.input.throttle &&
+      cs.throttleFirstHeldTick !== -1 &&
+      cs.throttleFirstHeldTick - countdownStartTick <= 4;
+
+    if (heldSinceFirstBeep) {
       kart.rocketStartTier = "stall";
       kart.boostSpeed = 0;
       kart.boostTimer = ROCKET_START_STALL_DURATION;
@@ -1050,26 +1700,28 @@ function evaluateRocketStarts(c: any, goTick: number): void {
       continue;
     }
 
-    // Player released and re-pressed (or is pressing now at GO)
-    // Evaluate timing: how close their current press is to the GO tick
-    const tickDiff = Math.abs(goTick - cs.accelerateHeldSince);
-    // If they released and are now pressing again, use current tick as reference
-    const effectiveDiff = cs.input.throttle ? 0 : tickDiff;
-    const finalDiff = Math.min(tickDiff, effectiveDiff || tickDiff);
+    // Must be on the throttle at GO to launch
+    if (!cs.input.throttle) {
+      kart.rocketStartTier = "none";
+      continue;
+    }
+
+    // Evaluate timing from the most recent press relative to the GO tick
+    const tickDiff = Math.abs(goTick - cs.throttleLastPressTick);
 
     let tier: RocketStartTier;
     let boostSpeed: number;
     let boostDuration: number;
 
-    if (finalDiff <= 2) {
+    if (tickDiff <= ROCKET_START_PERFECT_WINDOW) {
       tier = "perfect";
       boostSpeed = ROCKET_START_PERFECT_SPEED;
       boostDuration = ROCKET_START_PERFECT_DURATION;
-    } else if (finalDiff <= 4) {
+    } else if (tickDiff <= ROCKET_START_GOOD_WINDOW) {
       tier = "good";
       boostSpeed = ROCKET_START_GOOD_SPEED;
       boostDuration = ROCKET_START_GOOD_DURATION;
-    } else if (finalDiff <= ROCKET_START_WINDOW) {
+    } else if (tickDiff <= ROCKET_START_OK_WINDOW) {
       tier = "ok";
       boostSpeed = ROCKET_START_OK_SPEED;
       boostDuration = ROCKET_START_OK_DURATION;
@@ -1190,13 +1842,28 @@ function executeItemUse(c: any, kart: KartState, playerId?: string): void {
     }
 
     case "lightning": {
-      // Hit all other karts
+      // Hit all other karts still racing (star + post-hit immunity spare them)
       const karts = Object.values(state.players) as KartState[];
       for (const other of karts) {
         if (other.id === kart.id) continue;
+        if (other.finishTime !== null) continue; // Already finished
         if (other.status === "starred") continue; // Star grants immunity
-        other.status = "shrunk";
-        other.statusTimer = LIGHTNING_SHRINK_DURATION;
+        const otherSim = findSimStateForPlayer(c, other.id);
+        if (otherSim && otherSim.immunityTicks > 0) continue; // Post-hit immunity
+
+        if (other.status === "spinning" || other.status === "falling") {
+          // Mid-spin/fall — apply the shrink duration to the timer without
+          // clobbering the status: overwriting "falling" with "shrunk"
+          // would strand the kart with no respawn path.
+          other.statusTimer = Math.max(
+            other.statusTimer,
+            LIGHTNING_SHRINK_DURATION,
+          );
+        } else {
+          other.status = "shrunk";
+          other.statusTimer = LIGHTNING_SHRINK_DURATION;
+        }
+
         // Track hit stats
         if (state.stats[kart.id]) state.stats[kart.id].hitsDealt++;
         if (state.stats[other.id]) state.stats[other.id].hitsTaken++;
@@ -1278,7 +1945,7 @@ function findNextKartAhead(state: RaceRoomState, kartId: string): string | null 
 function applyHitToKart(
   c: any,
   kart: KartState,
-  connState: ConnState | null,
+  simState: KartSimState | null,
   speedMult: number,
   byKartId: string | null,
   itemType: ItemType | "collision",
@@ -1288,12 +1955,14 @@ function applyHitToKart(
   // Set hitstop frames — freeze the kart briefly before applying the spin
   kart.hitstopTicks = HITSTOP_FRAMES;
 
-  // Store pending hit data on the connection state if available
-  if (connState) {
-    connState.hitstopPendingSpeed = speedMult;
-    connState.hitstopPendingDrift = true;
+  // Store pending hit data on the kart's sim state (ConnState for humans, the
+  // bot's sim for CPU karts) so the shared stepKart resolves the spin after
+  // the hitstop window — identical for bots and humans.
+  if (simState) {
+    simState.hitstopPendingSpeed = speedMult;
+    simState.hitstopPendingDrift = true;
   } else {
-    // No connState (offline player?) — apply immediately without hitstop
+    // No sim state (truly driverless, e.g. mid-grace coast) — apply now.
     kart.status = "spinning";
     kart.statusTimer = SPIN_DURATION;
     kart.speed *= speedMult;
@@ -1351,7 +2020,7 @@ function phaseTick(c: any, now: number, dtMs: number, tickCounter: number): void
 
         notifyLobby(c, state.id, {
           playerCount: getNonSpectatorCount(c),
-          status: "playing",
+          status: "racing",
         });
 
         // Evaluate rocket starts on GO
@@ -1367,10 +2036,18 @@ function phaseTick(c: any, now: number, dtMs: number, tickCounter: number): void
       const karts = Object.values(state.players) as KartState[];
       const allFinished = karts.length > 0 && karts.every((k) => k.finishTime !== null);
 
+      // Safety net: a race also ends once every HUMAN racer has finished and only
+      // bots are still circulating. Bots finish on their own now (the mesh-aware
+      // aim line lets them complete laps), but this guarantees a solo human's race
+      // can never hang on the 5-minute RACE_TIME_LIMIT if a bot ever stalls.
+      const humanKarts = karts.filter((k) => !isBotId(k.id));
+      const allHumansFinished =
+        humanKarts.length > 0 && humanKarts.every((k) => k.finishTime !== null);
+
       // Check time limit
       const timeExpired = state.raceTimer >= RACE_TIME_LIMIT;
 
-      if (allFinished || timeExpired) {
+      if (allFinished || allHumansFinished || timeExpired) {
         state.phase = "finished";
         state.phaseStartedAt = now;
 
@@ -1398,6 +2075,16 @@ function phaseTick(c: any, now: number, dtMs: number, tickCounter: number): void
           raceTimer: state.raceTimer,
         });
         notifyLobby(c, state.id, null);
+      }
+      break;
+    }
+
+    case "finished": {
+      // Auto-reset after the results display window so the room loops into
+      // the next race even if players never vote rematch (the old missing
+      // case left rooms softlocked on the results screen forever).
+      if (elapsed >= RACE_FINISH_DISPLAY) {
+        transitionToWaiting(c, "Ready up for the next race!");
       }
       break;
     }
@@ -1523,31 +2210,29 @@ function slipstreamTick(c: any, track: ReturnType<typeof getTrack>): void {
   }
 }
 
-/** Compute slipstream speed bonus for a kart (called in kartPhysicsTick) */
-function getSlipstreamBonus(cs: ConnState): number {
-  if (cs.slipstreamBonusTicks <= 0) return 0;
-
-  // Full bonus for most of the duration, decay in last SLIPSTREAM_DECAY_TICKS
-  if (cs.slipstreamBonusTicks > SLIPSTREAM_DECAY_TICKS) {
-    return SLIPSTREAM_BONUS;
-  }
-  // Linear decay
-  return SLIPSTREAM_BONUS * (cs.slipstreamBonusTicks / SLIPSTREAM_DECAY_TICKS);
-}
-
 // ---------------------------------------------------------------------------
 // Kart physics tick
 // ---------------------------------------------------------------------------
 
-function kartPhysicsTick(
-  c: any,
-  dt: number,
-  now: number,
-  track: ReturnType<typeof getTrack>,
-  tickCounter: number,
-): void {
+/**
+ * Frozen "coast" input fed to a kart that has already crossed the finish line.
+ * The kart keeps running through the SAME shared stepKart (so drag rolls it to
+ * a gentle natural stop ~2s after finishing — clearing the racing line) but no
+ * longer responds to the player's held throttle/steer, which would otherwise
+ * let a finished kart keep driving laps. Shared/frozen to avoid per-tick alloc.
+ */
+const COAST_INPUT: KartInput = Object.freeze({
+  steering: 0,
+  throttle: false,
+  brake: false,
+  drift: false,
+  useItem: false,
+  heldBehind: false,
+  seq: 0,
+});
+
+function kartPhysicsTick(c: any, dt: number, track: ReturnType<typeof getTrack>): void {
   const state = c.state as RaceRoomState;
-  const segments = track.segments;
 
   for (const conn of c.conns.values()) {
     const cs = conn.state as ConnState;
@@ -1556,439 +2241,150 @@ function kartPhysicsTick(
     const kart = state.players[cs.playerId] as KartState | undefined;
     if (!kart) continue;
 
-    // Already finished — freeze kart
-    if (kart.finishTime !== null) continue;
+    // A finished kart coasts to rest (early-finisher behavior) and ignores
+    // live input — finished bots coast the same way in botPhysicsTick, so the
+    // two paths stay symmetric and a finished player can't keep driving laps
+    // on a held throttle.
+    const input = kart.finishTime !== null ? COAST_INPUT : cs.input;
 
-    // --- Hitstop: freeze kart for N ticks on impact ---
-    if (kart.hitstopTicks > 0) {
-      kart.hitstopTicks--;
-      if (kart.hitstopTicks <= 0) {
-        // Hitstop expired — now apply the spin/knockback
-        kart.status = "spinning";
-        kart.statusTimer = SPIN_DURATION;
-        kart.speed *= cs.hitstopPendingSpeed;
-        if (cs.hitstopPendingDrift) {
-          kart.driftState = defaultDrift();
-        }
-        cs.hitstopPendingSpeed = 0;
-        cs.hitstopPendingDrift = false;
-      }
-      // Skip all physics while in hitstop
+    // Rear-defense: the kart trails its held item while the player holds the
+    // item key with a holdable item and is alive. Snapshotted so the client can
+    // render the trailed mesh and projectileTick can place the defense point.
+    kart.heldItemActive =
+      Boolean(input.heldBehind) &&
+      isHoldableItem(kart.currentItem) &&
+      kart.finishTime === null &&
+      kart.hitstopTicks <= 0 &&
+      kart.status !== "spinning" &&
+      kart.status !== "falling";
+
+    // Shared physics step — the exact same code the client predicts with
+    // (src/lib/racing/kart-physics.ts). Server-only outcomes come back as
+    // events so they can be folded into stats / broadcasts here.
+    const events = stepKart(kart, cs, input, track, dt, state.trackId);
+    foldStepEvents(c, kart, cs.playerId, events);
+  }
+}
+
+/** Fold a stepKart result into stats + driftTier broadcasts (humans + bots). */
+function foldStepEvents(
+  c: any,
+  kart: KartState,
+  playerId: string,
+  events: ReturnType<typeof stepKart>,
+): void {
+  const state = c.state as RaceRoomState;
+  const stats = state.stats[playerId] as RaceStats | undefined;
+  if (stats) {
+    if (events.topSpeedSample !== null && events.topSpeedSample > stats.topSpeed) {
+      stats.topSpeed = events.topSpeedSample;
+    }
+    if (events.driftBoostReleased) {
+      stats.driftBoosts++;
+    }
+  }
+  if (events.driftTierUp !== null) {
+    c.broadcast("driftTierReached", {
+      kartId: kart.id,
+      tier: events.driftTierUp,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CPU bot physics tick — same stepKart as humans, AI-synthesized input
+// ---------------------------------------------------------------------------
+
+/**
+ * Drive every CPU bot one tick: compute a path-following KartInput, run the
+ * SHARED stepKart (identical handling to humans), fold stats/events, then let
+ * the bot fire its held item through the normal executeItemUse path.
+ *
+ * Rubber-banding nudges each bot's target speed up/down by its progress gap to
+ * the nearest human so a lone human stays in contention without bots feeling
+ * unfair.
+ */
+function botPhysicsTick(c: any, dt: number, track: ReturnType<typeof getTrack>): void {
+  const state = c.state as RaceRoomState;
+  const bots = c.vars?.bots as
+    | Record<string, { sim: KartSimState; driver: BotSimState }>
+    | undefined;
+  if (!bots) return;
+
+  // Nearest-human progress reference for rubber-banding (best human in front).
+  let leadHumanProgress = -Infinity;
+  for (const id of Object.keys(state.players)) {
+    if (isBotId(id)) continue;
+    const k = state.players[id] as KartState;
+    if (k.finishTime !== null) continue;
+    if (k.raceProgress > leadHumanProgress) leadHumanProgress = k.raceProgress;
+  }
+  const trackLength = track.totalLength || 1;
+
+  const baseMult = BOT_BASE_SPEED_MULT[state.botDifficulty] ?? BOT_BASE_SPEED_MULT.medium;
+
+  // Mesh-snapped racing line (memoized): on track1 the authored segment centers
+  // sit off the baked road mesh by up to ~130 units, so bots must aim at this
+  // on-mesh line instead of seg.center or they drive off-road and never finish.
+  // Null on neon-circuit (no mesh — centerline is the road).
+  const racingLine = getMeshRacingLine(state.trackId, track);
+
+  for (const botId of Object.keys(bots)) {
+    const kart = state.players[botId] as KartState | undefined;
+    if (!kart) {
+      delete bots[botId];
       continue;
     }
 
-    // --- Hit immunity tick ---
-    if (cs.immunityTicks > 0) {
-      cs.immunityTicks--;
-    }
-
-    // --- Status effect handling ---
-    if (kart.status === "spinning" || kart.status === "falling") {
-      kart.statusTimer -= dt * RACE_SERVER_TICK_INTERVAL;
-      kart.speed *= 0.92; // Rapid deceleration while spinning
-      if (kart.statusTimer <= 0) {
-        // Respawn if falling, otherwise just recover
-        if (kart.status === "falling") {
-          const segIdx = findNearestSegment(segments, kart.position.x, kart.position.z);
-          const respawn = getRespawnPosition(segments, segIdx);
-          kart.position = plainVec3(respawn.position);
-          kart.heading = respawn.heading;
-          kart.speed = 0;
-        }
-        kart.status = "normal";
-        kart.statusTimer = 0;
-        // Grant hit immunity after recovering from spin
-        cs.immunityTicks = HIT_IMMUNITY_TICKS;
-      }
-      // Update velocity for snapshot
-      kart.velocity = {
-        x: Math.sin(kart.heading) * kart.speed,
-        y: 0,
-        z: Math.cos(kart.heading) * kart.speed,
-      };
+    // A finished bot coasts to rest like a finished human (drag rolls it off
+    // the racing line over ~2s) instead of freezing mid-motion — no AI input,
+    // no item use, just the shared coast step.
+    if (kart.finishTime !== null) {
+      stepKart(kart, bots[botId].sim, COAST_INPUT, track, dt, state.trackId);
       continue;
     }
 
-    // --- Starred timer ---
-    if (kart.status === "starred") {
-      kart.statusTimer -= dt * RACE_SERVER_TICK_INTERVAL;
-      if (kart.statusTimer <= 0) {
-        kart.status = "normal";
-        kart.statusTimer = 0;
-      }
+    const { sim, driver } = bots[botId];
+
+    // Rubber-band: scale toward the human leader. Behind → speed up (+range),
+    // ahead → ease off (−range). Half a lap of gap saturates the effect.
+    let speedMult = baseMult;
+    if (Number.isFinite(leadHumanProgress)) {
+      const gap = leadHumanProgress - kart.raceProgress; // >0 = bot behind
+      const norm = Math.max(-1, Math.min(1, gap / (trackLength * 0.5)));
+      speedMult = baseMult * (1 + BOT_RUBBERBAND_RANGE * norm);
     }
 
-    // --- Shrunk timer ---
-    if (kart.status === "shrunk") {
-      kart.statusTimer -= dt * RACE_SERVER_TICK_INTERVAL;
-      if (kart.statusTimer <= 0) {
-        kart.status = "normal";
-        kart.statusTimer = 0;
-      }
-    }
+    // Item targeting: the kart immediately ahead in race order (if not us).
+    const posIdx = state.positions.indexOf(botId);
+    const targetAheadId =
+      posIdx > 0 ? state.positions[posIdx - 1] ?? null : null;
+    const isLeading = state.positions.length > 0 && state.positions[0] === botId;
 
-    // --- Read input ---
-    const input = cs.input;
+    const ctx: BotContext = {
+      tick: c.vars?.tick ?? 0,
+      speedMult,
+      targetAheadId,
+      isLeading,
+      racingLine,
+    };
 
-    // --- Acceleration / Braking ---
-    const shrunkMult = kart.status === "shrunk" ? SHRUNK_SPEED_PENALTY : 1.0;
+    const { input, useItem: wantsItem } = computeBotInput(kart, driver, track, ctx);
 
-    // Rocket start stall penalty: cap speed during stall
-    const isStalling = kart.rocketStartTier === "stall" && kart.boostTimer > 0;
+    const events = stepKart(kart, sim, input, track, dt, state.trackId);
+    foldStepEvents(c, kart, botId, events);
 
-    if (input.throttle) {
-      kart.speed += KART_ACCELERATION * dt * shrunkMult;
-    }
-
-    if (input.brake) {
-      if (kart.speed > 0) {
-        // Braking (only when not drifting)
-        if (!kart.driftState.active) {
-          kart.speed -= KART_BRAKE_FORCE * dt;
-          if (kart.speed < 0) kart.speed = 0;
-        }
-      } else {
-        // Reverse
-        kart.speed -= KART_REVERSE_ACCEL * dt;
-      }
-    }
-
-    // --- Surface check & classification ---
-    const segIdx = findNearestSegment(segments, kart.position.x, kart.position.z, cs.prevSegIdx);
-    const seg = segments[segIdx];
-    const hw = Math.sqrt(
-      (seg.right.x - seg.left.x) ** 2 + (seg.right.z - seg.left.z) ** 2,
-    ) / 2;
-    const lateralDist = Math.abs(getLateralOffset(segments, segIdx, kart.position.x, kart.position.z));
-    const onRoadHw = hw * 1.3;
-    const meshRoadDistance =
-      state.trackId === "track1"
-        ? sampleRoadDistance(kart.position.x, kart.position.z)
-        : 0;
-    const onRoad =
-      state.trackId === "track1"
-        ? meshRoadDistance <= 4
-        : lateralDist <= onRoadHw;
-
-    let surface: SurfaceType = "asphalt";
-    if (!onRoad) {
-      const outOfBounds =
-        state.trackId === "track1"
-          ? meshRoadDistance > 120
-          : lateralDist > onRoadHw * OUT_OF_BOUNDS_BOUNDARY;
-      if (outOfBounds) {
-        kart.status = "falling";
-        kart.statusTimer = SPIN_DURATION;
-        kart.speed = 0;
-        kart.driftState = defaultDrift();
-        kart.flowMeter = Math.max(0, kart.flowMeter - FLOW_DECAY_ON_HIT);
-        continue;
-      }
-      if (state.trackId === "track1") {
-        surface = meshRoadDistance > 40 ? "sand" : "shoulder";
-      } else {
-        const offRoadRatio = (lateralDist - onRoadHw) / (onRoadHw * (OUT_OF_BOUNDS_BOUNDARY - 1));
-        surface = offRoadRatio > 0.6 ? "sand" : "shoulder";
-      }
-    } else {
-      if (state.trackId === "track1") {
-        if (meshRoadDistance > 0 && meshRoadDistance < 10) surface = "rumble";
-      } else {
-        const edgeProximity = lateralDist / onRoadHw;
-        if (edgeProximity > 0.95) surface = "rumble";
-      }
-    }
-    kart.surface = surface;
-
-    const surfaceGrip = SURFACE_GRIP[surface];
-    const surfaceDrag = SURFACE_DRAG[surface];
-    const surfaceDriftMult = SURFACE_DRIFT_CHARGE_MULT[surface];
-
-    if (cs.dustCarryoverTicks > 0) cs.dustCarryoverTicks--;
-    if (surface !== "asphalt" && surface !== "rumble") {
-      cs.dustCarryoverTicks = DUST_CARRYOVER_TICKS;
-    }
-    const dustPenalty = cs.dustCarryoverTicks > 0 ? DUST_CARRYOVER_GRIP_PENALTY : 0;
-
-    // --- Compression / banking / load factor ---
-    // Use only adjacent segment for elevation delta to avoid large jumps
-    const adjSegIdx = Math.abs(segIdx - cs.prevSegIdx) <= 2
-      ? cs.prevSegIdx
-      : (segIdx - 1 + segments.length) % segments.length;
-    const prevSeg = segments[adjSegIdx] || seg;
-    const elevDelta = seg.center.y - prevSeg.center.y;
-    let loadFactor = 1.0;
-    // Clamp elevation delta to reasonable range to prevent wild grip swings
-    const clampedDelta = Math.max(-2, Math.min(2, elevDelta));
-    if (clampedDelta > 0.1) {
-      loadFactor = 1.0 + Math.min(clampedDelta * 0.5, COMPRESSION_GRIP_GAIN);
-    } else if (clampedDelta < -0.1) {
-      loadFactor = 1.0 - Math.min(Math.abs(clampedDelta) * 0.5, CREST_GRIP_LOSS);
-    }
-
-    const bankAngle = seg.left.y !== seg.right.y
-      ? Math.atan2(Math.abs(seg.left.y - seg.right.y), hw * 2)
-      : 0;
-    const bankBonus = bankAngle * BANKING_GRIP_BONUS * 10;
-    loadFactor = Math.max(0.6, Math.min(1.3, loadFactor + bankBonus));
-    kart.loadFactor = loadFactor;
-
-    const wasAirborne = cs.airborne;
-    cs.airborne = loadFactor < 0.55;
-    if (wasAirborne && !cs.airborne) {
-      if (Math.abs(kart.slipAngle) > LANDING_SCRUB_THRESHOLD) {
-        kart.speed *= 1 - LANDING_SCRUB_PENALTY;
-      } else {
-        kart.speed += LANDING_CLEAN_BONUS;
-        kart.flowMeter = Math.min(FLOW_MAX, kart.flowMeter + 0.02);
-      }
-    }
-    cs.prevSegIdx = segIdx;
-    cs.prevElevation = seg.center.y;
-
-    // --- Effective grip (combines surface, load, dust, flow) ---
-    const flowGripBonus = kart.flowMeter * FLOW_TURN_BONUS;
-    const effectiveGrip = Math.max(0.2, (surfaceGrip - dustPenalty) * loadFactor + flowGripBonus);
-
-    // --- Drag (surface-aware) ---
-    kart.speed *= 1 - KART_DRAG * surfaceDrag * dt;
-
-    // --- Off-road flow decay + wall scrub ---
-    if (!onRoad) {
-      const offAmount =
-        state.trackId === "track1"
-          ? Math.min(1, meshRoadDistance / 40)
-          : (lateralDist - onRoadHw) / onRoadHw;
-      const offRoadDrag = (1 - OFF_ROAD_SPEED_MULT) * 0.02 * Math.min(1, offAmount) * dt;
-      kart.speed *= 1 - offRoadDrag;
-      kart.flowMeter = Math.max(0, kart.flowMeter - FLOW_DECAY_OFF_ROAD * 0.5 * dt);
-
-      if (offAmount > 0.5) {
-        const headingAlignToNormal = Math.abs(
-          Math.sin(kart.heading) * seg.normal.x + Math.cos(kart.heading) * seg.normal.z
-        );
-        if (headingAlignToNormal > WALL_SCRUB_ANGLE_THRESHOLD) {
-          kart.speed *= 1 - WALL_SCRUB_SPEED_LOSS * 0.5;
-          kart.slipAngle = Math.min(SLIP_ANGLE_MAX, kart.slipAngle + 0.03);
-        }
-      }
-    }
-
-    // --- Boost zone check ---
-    if (isInBoostZone(track.boostZones, segIdx)) {
-      if (kart.boostTimer <= 0 || kart.boostSpeed < BOOST_PAD_SPEED) {
-        kart.boostSpeed = BOOST_PAD_SPEED;
-        kart.boostTimer = BOOST_PAD_DURATION;
-        kart.flowMeter = Math.min(FLOW_MAX, kart.flowMeter + FLOW_GAIN_BOOST_PAD);
-      }
-    }
-
-    // --- Active boost timer (flow extends duration) ---
-    if (kart.boostTimer > 0) {
-      const boostDecay = dt * RACE_SERVER_TICK_INTERVAL;
-      const flowExtend = kart.flowMeter > 0.5 ? FLOW_BOOST_EXTEND_MULT : 1.0;
-      kart.boostTimer -= boostDecay / flowExtend;
-      if (kart.boostTimer <= 0) {
-        kart.boostTimer = 0;
-        kart.boostSpeed = 0;
-        if (kart.rocketStartTier === "stall") {
-          kart.rocketStartTier = "none";
-        }
-      }
-    }
-
-    // --- Speed cap (with flow bonus) ---
-    const slipBonus = getSlipstreamBonus(cs);
-    const flowSpeedBonus = kart.flowMeter * FLOW_SPEED_BONUS;
-    let maxSpeed = (KART_MAX_SPEED + kart.boostSpeed + slipBonus + flowSpeedBonus) * shrunkMult;
-
-    if (isStalling) {
-      maxSpeed = Math.min(maxSpeed, ROCKET_START_STALL_MAX_SPEED);
-    }
-
-    const maxReverse = KART_REVERSE_MAX * shrunkMult;
-    if (kart.speed > maxSpeed) kart.speed = maxSpeed;
-    if (kart.speed < -maxReverse) kart.speed = -maxReverse;
-
-    if (state.stats[cs.playerId]) {
-      if (Math.abs(kart.speed) > state.stats[cs.playerId].topSpeed) {
-        state.stats[cs.playerId].topSpeed = Math.abs(kart.speed);
-      }
-    }
-
-    // --- Improved Turn Curve (grip-aware) ---
-    const speedRatio = Math.abs(kart.speed) / KART_MAX_SPEED;
-    let turnRate = KART_TURN_RATE * (1 - TURN_HIGH_SPEED_REDUCTION * Math.pow(speedRatio, TURN_CURVE_EXPONENT));
-    turnRate *= effectiveGrip;
-
-    if (kart.driftState.active) {
-      turnRate *= DRIFT_TURN_MULTIPLIER;
-    }
-
-    // --- Counter-steer bonus ---
-    const currentSteerDir = input.steering > 0.01 ? 1 : (input.steering < -0.01 ? -1 : 0);
-    if (currentSteerDir !== 0 && cs.lastSteerDirection !== 0 && currentSteerDir !== cs.lastSteerDirection) {
-      turnRate *= COUNTER_STEER_BONUS;
-    }
-
-    // --- Snap Steering ---
-    const prevSign = cs.prevSteerSign;
-    if (currentSteerDir !== 0 && (prevSign === 0 || currentSteerDir !== prevSign)) {
-      cs.steerInputTicks = 0;
-    }
-
-    if (currentSteerDir !== 0 && cs.steerInputTicks < SNAP_STEERING_FRAMES) {
-      const snapProgress = cs.steerInputTicks / SNAP_STEERING_FRAMES;
-      const snapMult = SNAP_STEERING_MULT + (1.0 - SNAP_STEERING_MULT) * snapProgress;
-      turnRate *= snapMult;
-      cs.steerInputTicks++;
-    } else if (currentSteerDir !== 0) {
-      cs.steerInputTicks++;
-    }
-
-    cs.prevSteerSign = currentSteerDir;
-    if (currentSteerDir !== 0) {
-      cs.lastSteerDirection = currentSteerDir;
-    }
-
-    const steerAmount = input.steering * turnRate * dt;
-    kart.heading -= steerAmount;
-
-    // --- Slip angle / lateral velocity (Grip-Budget) ---
-    const steerMagnitude = Math.abs(steerAmount);
-    const speedFactor = Math.min(1, Math.abs(kart.speed) / KART_MAX_SPEED);
-    const slipBuildup = steerMagnitude * speedFactor * SLIP_ANGLE_BUILDUP * 0.7;
-    const slipRecovery = SLIP_ANGLE_RECOVERY * effectiveGrip * dt * 1.5;
-    const driftFloor = kart.driftState.active ? DRIFT_SLIP_FLOOR : 0;
-
-    kart.slipAngle = Math.max(driftFloor, Math.min(SLIP_ANGLE_MAX,
-      kart.slipAngle + slipBuildup - slipRecovery
-    ));
-
-    const gripLoss = (kart.slipAngle / SLIP_ANGLE_MAX) * GRIP_LOSS_AT_MAX_SLIP;
-    if (kart.slipAngle > 0.15) {
-      kart.speed *= 1 - gripLoss * 0.01 * dt;
-    }
-
-    const lateralPush = kart.slipAngle * LATERAL_PUSH_STRENGTH * Math.sign(input.steering || kart.driftState.direction) * kart.speed;
-
-    // --- Flow meter natural decay ---
-    kart.flowMeter = Math.max(0, kart.flowMeter - FLOW_DECAY_PER_TICK * dt);
-
-    // --- Flow: clean corner detection (high speed through turn without off-road) ---
-    if (onRoad && steerMagnitude > 0.01 && speedRatio > 0.7 && kart.slipAngle < SLIP_ANGLE_MAX * 0.6) {
-      kart.flowMeter = Math.min(FLOW_MAX, kart.flowMeter + FLOW_GAIN_CLEAN_CORNER * dt);
-    }
-
-    // --- Drift mechanics ---
-    const drift = kart.driftState;
-
+    // Item use through the same path humans take (respects the same guards).
     if (
-      !drift.active &&
-      input.drift &&
-      Math.abs(kart.speed) > MIN_DRIFT_SPEED &&
-      Math.abs(input.steering) > 0.3
+      wantsItem &&
+      kart.currentItem &&
+      kart.finishTime === null &&
+      kart.hitstopTicks <= 0 &&
+      kart.status !== "spinning" &&
+      kart.status !== "falling"
     ) {
-      // Start drift
-      drift.active = true;
-      drift.direction = (input.steering > 0 ? 1 : -1) as DriftDirection;
-      drift.charge = 0;
-      drift.timer = 0;
-      // Reset drift release grace
-      cs.driftReleaseGraceTicks = 0;
-      cs.driftReleaseGraceCharge = 0;
+      executeItemUse(c, kart, botId);
     }
-
-    if (drift.active) {
-      if (input.drift && Math.abs(kart.speed) > MIN_DRIFT_SPEED * 0.5) {
-        drift.timer += surfaceDriftMult;
-
-        // Check charge thresholds and broadcast tier events
-        const prevCharge = drift.charge;
-
-        if (drift.timer >= DRIFT_CHARGE_THRESHOLDS[2] && drift.charge < 3) {
-          drift.charge = 3 as DriftCharge;
-        } else if (drift.timer >= DRIFT_CHARGE_THRESHOLDS[1] && drift.charge < 2) {
-          drift.charge = 2 as DriftCharge;
-        } else if (drift.timer >= DRIFT_CHARGE_THRESHOLDS[0] && drift.charge < 1) {
-          drift.charge = 1 as DriftCharge;
-        }
-
-        // Broadcast drift tier events on threshold crossing
-        if (drift.charge > prevCharge) {
-          c.broadcast("driftTierReached", {
-            kartId: kart.id,
-            tier: drift.charge,
-          });
-          // Track the latest tier reached (for grace window)
-          cs.driftReleaseGraceTicks = 4; // Reset grace ticks on new tier
-          cs.driftReleaseGraceCharge = drift.charge;
-        } else if (cs.driftReleaseGraceTicks > 0) {
-          cs.driftReleaseGraceTicks--;
-        }
-      } else {
-        // Release drift — apply boost based on charge
-        let chargeToUse = drift.charge;
-
-        // Drift Release Grace Window: if within 4 ticks of reaching a new tier, grant that tier
-        if (cs.driftReleaseGraceTicks > 0 && cs.driftReleaseGraceCharge > drift.charge) {
-          chargeToUse = cs.driftReleaseGraceCharge;
-        }
-
-        if (chargeToUse > 0) {
-          const chargeIdx = (chargeToUse - 1) as 0 | 1 | 2;
-          kart.boostSpeed = DRIFT_BOOST_SPEEDS[chargeIdx];
-          kart.boostTimer = DRIFT_BOOST_DURATIONS[chargeIdx];
-          kart.flowMeter = Math.min(FLOW_MAX, kart.flowMeter + FLOW_GAIN_DRIFT_RELEASE * chargeToUse);
-
-          if (state.stats[cs.playerId]) {
-            state.stats[cs.playerId].driftBoosts++;
-          }
-        }
-
-        // Reset drift
-        drift.active = false;
-        drift.direction = 0;
-        drift.charge = 0;
-        drift.timer = 0;
-        cs.driftReleaseGraceTicks = 0;
-        cs.driftReleaseGraceCharge = 0;
-      }
-    }
-
-    // --- Mesh heightfield placement ---
-    // Track1 elevation should come from the baked road mesh, not the sampled
-    // centerline, so the kart stays glued to the visible road surface.
-    const nextSegIdx = (segIdx + 1) % segments.length;
-    const prevSegIdx2 = (segIdx - 1 + segments.length) % segments.length;
-    const nextSeg = segments[nextSegIdx];
-    const prevSeg2 = segments[prevSegIdx2];
-    const meshY = sampleRoadHeight(kart.position.x, kart.position.z);
-    const targetY = meshY ?? seg.center.y;
-
-    // --- Position integration (with lateral push from slip angle) ---
-    const vx = Math.sin(kart.heading) * kart.speed;
-    const vz = Math.cos(kart.heading) * kart.speed;
-    const lateralNx = -Math.cos(kart.heading);
-    const lateralNz = Math.sin(kart.heading);
-
-    kart.position.x += (vx + lateralNx * lateralPush) * dt;
-    kart.position.z += (vz + lateralNz * lateralPush) * dt;
-
-    const desiredY = targetY + 2.5;
-    kart.position.y += (desiredY - kart.position.y) * 0.3;
-
-    // --- Slope force (smoothed over 3 segments) ---
-    const slopeGradient = (nextSeg.center.y - prevSeg2.center.y) /
-      (Math.max(1, segments[nextSegIdx].distance - segments[prevSegIdx2].distance) || 1);
-    const headingDirX = Math.sin(kart.heading);
-    const headingDirZ = Math.cos(kart.heading);
-    const alignment = headingDirX * seg.forward.x + headingDirZ * seg.forward.z;
-    const slopeForce = -slopeGradient * 0.015 * alignment * dt;
-    kart.speed += slopeForce;
-
-    // --- Update velocity for snapshot interpolation ---
-    kart.velocity = { x: vx + lateralNx * lateralPush, y: 0, z: vz + lateralNz * lateralPush };
   }
 }
 
@@ -2019,11 +2415,24 @@ function kartCollisionTick(c: any, dt: number): void {
       const nx = dx / dist;
       const nz = dz / dist;
 
-      const overlap = (minDist - dist) / 2;
-      a.position.x -= nx * overlap;
-      a.position.z -= nz * overlap;
-      b.position.x += nx * overlap;
-      b.position.z += nz * overlap;
+      // Per-car mass: the heavier kart shoves the lighter one further and
+      // loses less of its own speed on contact. Shares are split by the
+      // OTHER kart's mass (a heavy opponent pushes you back more).
+      const aMass = getCarStats(a.carId).massMult;
+      const bMass = getCarStats(b.carId).massMult;
+      const totalMass = aMass + bMass;
+      const aSepShare = bMass / totalMass; // a is pushed proportional to b's mass
+      const bSepShare = aMass / totalMass;
+      // Speed-loss multiplier: lighter karts (relative to the pair) eat more
+      // of the impulse. MASS_ADVANTAGE_PUSH scales how strong the bias is.
+      const aImpulseMult = 1 + (bMass - aMass) / totalMass * (MASS_ADVANTAGE_PUSH * 10);
+      const bImpulseMult = 1 + (aMass - bMass) / totalMass * (MASS_ADVANTAGE_PUSH * 10);
+
+      const overlap = minDist - dist;
+      a.position.x -= nx * overlap * aSepShare;
+      a.position.z -= nz * overlap * aSepShare;
+      b.position.x += nx * overlap * bSepShare;
+      b.position.z += nz * overlap * bSepShare;
 
       const aForwardX = Math.sin(a.heading);
       const aForwardZ = Math.cos(a.heading);
@@ -2037,39 +2446,49 @@ function kartCollisionTick(c: any, dt: number): void {
       const isRearTap = (aDot > 0.6 && bDot < -0.3) || (bDot > 0.6 && aDot < -0.3);
 
       if (isSideContact) {
-        a.speed -= SIDE_RUB_SCRUB_RATE * Math.abs(a.speed);
-        b.speed -= SIDE_RUB_SCRUB_RATE * Math.abs(b.speed);
+        a.speed *= Math.pow(1 - SIDE_RUB_SCRUB_RATE, dt);
+        b.speed *= Math.pow(1 - SIDE_RUB_SCRUB_RATE, dt);
         a.slipAngle = Math.min(SLIP_ANGLE_MAX, a.slipAngle + 0.03);
         b.slipAngle = Math.min(SLIP_ANGLE_MAX, b.slipAngle + 0.03);
       } else if (isRearTap) {
         if (aDot > bDot) {
           b.slipAngle = Math.min(SLIP_ANGLE_MAX, b.slipAngle + REAR_TAP_DESTABILIZE);
-          b.speed -= KART_COLLISION_PUSH * 1.5;
-          a.speed -= KART_COLLISION_PUSH * 0.5;
+          b.speed -= KART_COLLISION_PUSH * 1.5 * bImpulseMult;
+          a.speed -= KART_COLLISION_PUSH * 0.5 * aImpulseMult;
         } else {
           a.slipAngle = Math.min(SLIP_ANGLE_MAX, a.slipAngle + REAR_TAP_DESTABILIZE);
-          a.speed -= KART_COLLISION_PUSH * 1.5;
-          b.speed -= KART_COLLISION_PUSH * 0.5;
+          a.speed -= KART_COLLISION_PUSH * 1.5 * aImpulseMult;
+          b.speed -= KART_COLLISION_PUSH * 0.5 * bImpulseMult;
         }
       } else {
-        a.speed -= aDot * KART_COLLISION_PUSH;
-        b.speed -= bDot * KART_COLLISION_PUSH;
+        a.speed -= aDot * KART_COLLISION_PUSH * aImpulseMult;
+        b.speed -= bDot * KART_COLLISION_PUSH * bImpulseMult;
       }
 
-      // Star collision — starred kart spins the other
+      // Star collision — starred kart spins the other. The hitstopTicks
+      // guard (mirroring projectileTick) stops kartHit from re-firing every
+      // tick while the victim is frozen in the 3-tick hitstop.
       if (a.status === "starred" && b.status !== "starred") {
-        if (b.status !== "spinning" && b.status !== "falling") {
-          const bConn = findConnStateForPlayer(c, b.id);
+        if (
+          b.status !== "spinning" &&
+          b.status !== "falling" &&
+          b.hitstopTicks <= 0
+        ) {
+          const bSim = findSimStateForPlayer(c, b.id);
           // Check hit immunity
-          if (!bConn || bConn.immunityTicks <= 0) {
-            applyHitToKart(c, b, bConn, 0.3, a.id, "collision");
+          if (!bSim || bSim.immunityTicks <= 0) {
+            applyHitToKart(c, b, bSim, 0.3, a.id, "collision");
           }
         }
       } else if (b.status === "starred" && a.status !== "starred") {
-        if (a.status !== "spinning" && a.status !== "falling") {
-          const aConn = findConnStateForPlayer(c, a.id);
-          if (!aConn || aConn.immunityTicks <= 0) {
-            applyHitToKart(c, a, aConn, 0.3, b.id, "collision");
+        if (
+          a.status !== "spinning" &&
+          a.status !== "falling" &&
+          a.hitstopTicks <= 0
+        ) {
+          const aSim = findSimStateForPlayer(c, a.id);
+          if (!aSim || aSim.immunityTicks <= 0) {
+            applyHitToKart(c, a, aSim, 0.3, b.id, "collision");
           }
         }
       }
@@ -2081,10 +2500,19 @@ function kartCollisionTick(c: any, dt: number): void {
 // Projectile tick (shells)
 // ---------------------------------------------------------------------------
 
+/** Segments ahead of the shell's own position a homing shell steers toward */
+const SHELL_PATH_LOOKAHEAD_SEGMENTS = 4;
+/** Within this XZ distance a homing shell abandons the road and chases the kart */
+const SHELL_DIRECT_HOMING_DIST = 50;
+/** Shells ride this far above the sampled road surface */
+const SHELL_ROAD_HOVER = 1.0;
+
 function projectileTick(c: any, dt: number, now: number, track: ReturnType<typeof getTrack>): void {
   const state = c.state as RaceRoomState;
   const projectiles = state.projectiles as ProjectileState[];
   const segments = track.segments;
+  const totalSegments = segments.length;
+  const isTrack1 = state.trackId === "track1";
   const toRemove: Set<string> = new Set();
 
   for (const proj of projectiles) {
@@ -2095,7 +2523,8 @@ function projectileTick(c: any, dt: number, now: number, track: ReturnType<typeo
       continue;
     }
 
-    // Red shell & blue shell homing
+    // Red shell & blue shell homing — path-follow the road toward the
+    // target (straight-line pursuit dove off the mesh on every corner).
     if ((proj.type === "redShell" || proj.type === "blueShell") && proj.targetId) {
       // For blue shell, dynamically retarget 1st place
       let targetId = proj.targetId;
@@ -2106,19 +2535,43 @@ function projectileTick(c: any, dt: number, now: number, track: ReturnType<typeo
 
       const target = state.players[targetId] as KartState | undefined;
       if (target && target.finishTime === null) {
-        const dx = target.position.x - proj.position.x;
-        const dz = target.position.z - proj.position.z;
+        const projSegIdx = findNearestSegment(
+          segments,
+          proj.position.x,
+          proj.position.z,
+        );
+        // target.segmentIndex is re-cached by the physics step each tick
+        const segGap =
+          (target.segmentIndex - projSegIdx + totalSegments) % totalSegments;
+        const distToTarget = vec3Distance2D(proj.position, target.position);
+
+        // Far away: steer at the road a few segments ahead so the shell
+        // follows corners. Close (or within the lookahead arc): lock on.
+        let aimX: number;
+        let aimZ: number;
+        if (
+          distToTarget <= SHELL_DIRECT_HOMING_DIST ||
+          segGap <= SHELL_PATH_LOOKAHEAD_SEGMENTS
+        ) {
+          aimX = target.position.x;
+          aimZ = target.position.z;
+        } else {
+          const ahead =
+            segments[(projSegIdx + SHELL_PATH_LOOKAHEAD_SEGMENTS) % totalSegments];
+          aimX = ahead.center.x;
+          aimZ = ahead.center.z;
+        }
+
+        const dx = aimX - proj.position.x;
+        const dz = aimZ - proj.position.z;
         const dist = Math.sqrt(dx * dx + dz * dz);
         if (dist > 0.1) {
-          const nx = dx / dist;
-          const nz = dz / dist;
-          // Steer toward target
           const currentSpeed = Math.sqrt(
             proj.velocity.x * proj.velocity.x + proj.velocity.z * proj.velocity.z,
           );
           const speed = Math.max(currentSpeed, SHELL_SPEED);
-          proj.velocity.x = nx * speed;
-          proj.velocity.z = nz * speed;
+          proj.velocity.x = (dx / dist) * speed;
+          proj.velocity.z = (dz / dist) * speed;
         }
       }
     }
@@ -2127,9 +2580,27 @@ function projectileTick(c: any, dt: number, now: number, track: ReturnType<typeo
     proj.position.x += proj.velocity.x * dt;
     proj.position.z += proj.velocity.z * dt;
 
-    // Track boundary bounce/destroy
     const segIdx = findNearestSegment(segments, proj.position.x, proj.position.z);
-    const onRoad = isOnRoad(segments, segIdx, proj.position.x, proj.position.z);
+
+    // Glue the shell to the road surface — launch height otherwise persists
+    // across track1's ~68 units of elevation change.
+    const meshY = isTrack1
+      ? sampleRoadHeight(proj.position.x, proj.position.z)
+      : null;
+    const roadY = meshY ?? segments[segIdx].center.y;
+    proj.position.y += (roadY + SHELL_ROAD_HOVER - proj.position.y) * 0.3;
+
+    // Track boundary bounce/destroy. Track1 karts live on the baked road
+    // mesh (sampleRoadDistance <= 4 in kartPhysicsTick), so shells use the
+    // same mesh test — the centerline half-width check killed them on wide
+    // or folded sections (e.g. the hairpin) that karts drive legally. The
+    // centerline test is kept as a union because TRACK1_CENTERS diverges
+    // from the mesh on some stretches and homing shells path-follow the
+    // centerline there.
+    const onRoad = isTrack1
+      ? sampleRoadDistance(proj.position.x, proj.position.z) <= 4 ||
+        isOnRoad(segments, segIdx, proj.position.x, proj.position.z)
+      : isOnRoad(segments, segIdx, proj.position.x, proj.position.z);
 
     if (!onRoad) {
       if (proj.type === "greenShell") {
@@ -2158,6 +2629,45 @@ function projectileTick(c: any, dt: number, now: number, track: ReturnType<typeo
       }
     }
 
+    // Held-item rear defense: a kart trailing an item exposes a defense point
+    // ~HELD_ITEM_DEFENSE_OFFSET units behind it. An incoming shell that reaches
+    // it (and isn't the defender's own) is destroyed and consumes the held item
+    // — the classic "drag a shell to block a red shell" move. Checked before
+    // the kart-body collision so a trailed item shields the kart itself.
+    let defended = false;
+    const defenderIds = Object.keys(state.players);
+    for (const did of defenderIds) {
+      const defender = state.players[did] as KartState;
+      if (!defender.heldItemActive) continue;
+      if (!isHoldableItem(defender.currentItem)) continue;
+      // Belt-and-suspenders: a grace-held (disconnected, driverless) kart can't
+      // defend. Only a live human connection or a CPU bot may hold the shield —
+      // a kart with neither is a coasting ghost whose heldItemActive is stale.
+      if (!isBotId(did) && !findConnStateForPlayer(c, did)) continue;
+      if (did === proj.ownerId && proj.age < PROJECTILE_PAIR_GRACE_MS) continue;
+      const backX = -Math.sin(defender.heading);
+      const backZ = -Math.cos(defender.heading);
+      const dpx = defender.position.x + backX * HELD_ITEM_DEFENSE_OFFSET;
+      const dpz = defender.position.z + backZ * HELD_ITEM_DEFENSE_OFFSET;
+      const ddx = proj.position.x - dpx;
+      const ddz = proj.position.z - dpz;
+      const r = HELD_ITEM_DEFENSE_RADIUS + SHELL_RADIUS;
+      if (ddx * ddx + ddz * ddz <= r * r) {
+        consumeHeldDefense(c, defender);
+        toRemove.add(proj.id);
+        c.broadcast("itemDestroyed", {
+          x: proj.position.x,
+          y: proj.position.y,
+          z: proj.position.z,
+          cause: "trailBlock",
+          defenderId: did,
+        } satisfies ItemDestroyedEvent);
+        defended = true;
+        break;
+      }
+    }
+    if (defended) continue;
+
     // Check kart collision
     const kartIds = Object.keys(state.players);
     for (const kid of kartIds) {
@@ -2169,13 +2679,75 @@ function projectileTick(c: any, dt: number, now: number, track: ReturnType<typeo
       if (kart.hitstopTicks > 0) continue; // Already in hitstop
 
       // Check hit immunity
-      const kartConn = findConnStateForPlayer(c, kid);
-      if (kartConn && kartConn.immunityTicks > 0) continue;
+      const kartSim = findSimStateForPlayer(c, kid);
+      if (kartSim && kartSim.immunityTicks > 0) continue;
 
       const hitDist = vec3Distance2D(proj.position, kart.position);
       if (hitDist < SHELL_RADIUS + KART_RADIUS) {
-        applyHitToKart(c, kart, kartConn, 0.3, proj.ownerId, proj.type);
+        applyHitToKart(c, kart, kartSim, 0.3, proj.ownerId, proj.type);
         toRemove.add(proj.id);
+        break;
+      }
+    }
+  }
+
+  // Projectile-vs-hazard: a shell that runs over a banana mutually destroys it.
+  // Squared-distance early-out; counts are tiny.
+  const hazards = state.hazards as HazardState[];
+  if (hazards.length > 0) {
+    const hazRemove: Set<string> = new Set();
+    for (const proj of projectiles) {
+      if (toRemove.has(proj.id)) continue;
+      for (const hazard of hazards) {
+        if (hazRemove.has(hazard.id)) continue;
+        const dx = proj.position.x - hazard.position.x;
+        const dz = proj.position.z - hazard.position.z;
+        const r = SHELL_RADIUS + BANANA_RADIUS;
+        if (dx * dx + dz * dz <= r * r) {
+          toRemove.add(proj.id);
+          hazRemove.add(hazard.id);
+          c.broadcast("itemDestroyed", {
+            x: hazard.position.x,
+            y: hazard.position.y,
+            z: hazard.position.z,
+            cause: "shellVsBanana",
+          } satisfies ItemDestroyedEvent);
+          break;
+        }
+      }
+    }
+    if (hazRemove.size > 0) {
+      state.hazards = hazards.filter((h) => !hazRemove.has(h.id));
+    }
+  }
+
+  // Projectile-vs-projectile: two shells that collide mutually destroy. Skip
+  // same-owner pairs younger than the launch grace so a multi-shot can't
+  // self-destruct at the muzzle.
+  for (let i = 0; i < projectiles.length; i++) {
+    const a = projectiles[i];
+    if (toRemove.has(a.id)) continue;
+    for (let j = i + 1; j < projectiles.length; j++) {
+      const b = projectiles[j];
+      if (toRemove.has(b.id)) continue;
+      if (
+        a.ownerId === b.ownerId &&
+        (a.age < PROJECTILE_PAIR_GRACE_MS || b.age < PROJECTILE_PAIR_GRACE_MS)
+      ) {
+        continue;
+      }
+      const dx = a.position.x - b.position.x;
+      const dz = a.position.z - b.position.z;
+      const r = SHELL_RADIUS + SHELL_RADIUS;
+      if (dx * dx + dz * dz <= r * r) {
+        toRemove.add(a.id);
+        toRemove.add(b.id);
+        c.broadcast("itemDestroyed", {
+          x: (a.position.x + b.position.x) * 0.5,
+          y: (a.position.y + b.position.y) * 0.5,
+          z: (a.position.z + b.position.z) * 0.5,
+          cause: "shellVsShell",
+        } satisfies ItemDestroyedEvent);
         break;
       }
     }
@@ -2187,18 +2759,53 @@ function projectileTick(c: any, dt: number, now: number, track: ReturnType<typeo
   }
 }
 
+/**
+ * A trailed item blocked an incoming shell — consume the defender's held item
+ * (clear currentItem / decrement charges) and broadcast an itemUsed-like event
+ * so clients fold the item out of the HUD slot.
+ */
+function consumeHeldDefense(c: any, defender: KartState): void {
+  const item = defender.currentItem;
+  if (!item) return;
+  if (defender.itemCharges > 1) {
+    defender.itemCharges -= 1;
+  } else {
+    defender.currentItem = null;
+    defender.itemCharges = 0;
+    defender.heldItemActive = false;
+  }
+  c.broadcast("itemUsed", { kartId: defender.id, item });
+}
+
 // ---------------------------------------------------------------------------
 // Hazard tick (bananas)
 // ---------------------------------------------------------------------------
 
+/** Bananas settle this far above the sampled road surface */
+const HAZARD_ROAD_HOVER = 0.5;
+
 function hazardTick(c: any, track: ReturnType<typeof getTrack>): void {
   const state = c.state as RaceRoomState;
   const hazards = state.hazards as HazardState[];
+  const segments = track.segments;
+  const isTrack1 = state.trackId === "track1";
   const toRemove: Set<string> = new Set();
 
   const kartIds = Object.keys(state.players);
 
   for (const hazard of hazards) {
+    // Settle the banana onto the road — it's dropped at kart hover height
+    // and would otherwise float there forever.
+    const meshY = isTrack1
+      ? sampleRoadHeight(hazard.position.x, hazard.position.z)
+      : null;
+    const roadY =
+      meshY ??
+      segments[
+        findNearestSegment(segments, hazard.position.x, hazard.position.z)
+      ].center.y;
+    hazard.position.y += (roadY + HAZARD_ROAD_HOVER - hazard.position.y) * 0.2;
+
     for (const kid of kartIds) {
       const kart = state.players[kid] as KartState;
       if (kart.finishTime !== null) continue;
@@ -2207,8 +2814,8 @@ function hazardTick(c: any, track: ReturnType<typeof getTrack>): void {
       if (kart.hitstopTicks > 0) continue; // Already in hitstop
 
       // Check hit immunity
-      const kartConn = findConnStateForPlayer(c, kid);
-      if (kartConn && kartConn.immunityTicks > 0) continue;
+      const kartSim = findSimStateForPlayer(c, kid);
+      if (kartSim && kartSim.immunityTicks > 0) continue;
 
       // Brief owner immunity (based on distance — owner just dropped it)
       if (kart.id === hazard.ownerId) {
@@ -2218,7 +2825,7 @@ function hazardTick(c: any, track: ReturnType<typeof getTrack>): void {
 
       const hitDist = vec3Distance2D(hazard.position, kart.position);
       if (hitDist < BANANA_RADIUS + KART_RADIUS) {
-        applyHitToKart(c, kart, kartConn, 0.5, hazard.ownerId, "banana");
+        applyHitToKart(c, kart, kartSim, 0.5, hazard.ownerId, "banana");
         toRemove.add(hazard.id);
         break;
       }
@@ -2255,6 +2862,9 @@ function itemBoxTick(c: any, now: number, track: ReturnType<typeof getTrack>): v
       const kart = state.players[kid] as KartState;
       if (kart.finishTime !== null) continue;
       if (kart.currentItem !== null) continue; // Already holding an item
+      // Tumbling through a row shouldn't vacuum boxes
+      if (kart.hitstopTicks > 0) continue;
+      if (kart.status === "spinning" || kart.status === "falling") continue;
 
       const hitDist = vec3Distance2D(box.position, kart.position);
       if (hitDist < KART_RADIUS + 0.8) {
@@ -2287,15 +2897,19 @@ function checkpointTick(c: any, track: ReturnType<typeof getTrack>): void {
   const segments = track.segments;
   const totalSegments = segments.length;
   const checkpoints = track.checkpoints;
+  const trackLength = track.totalLength;
+  const windowSegs = totalSegments * 0.05;
 
   const kartIds = Object.keys(state.players);
   for (const kid of kartIds) {
     const kart = state.players[kid] as KartState;
     if (kart.finishTime !== null) continue;
 
-    const segIdx = findNearestSegment(segments, kart.position.x, kart.position.z);
+    // Reuse the nearest segment cached by the physics step this tick
+    const segIdx = kart.segmentIndex;
+    const seg = segments[segIdx];
 
-    // Check if kart is near their next checkpoint
+    // --- Checkpoint collection / lap completion ---
     const nextCp = kart.checkpoint;
     if (nextCp >= checkpoints.length) {
       // All checkpoints passed — check if crossing start/finish (segment 0 region)
@@ -2304,11 +2918,27 @@ function checkpointTick(c: any, track: ReturnType<typeof getTrack>): void {
         kart.lap += 1;
         kart.checkpoint = 0;
 
-        // Track best lap time in stats
+        // If the crossing was detected past checkpoint 0's collection window
+        // (fast kart, sparse segment sampling), credit any windows already
+        // passed so the lap doesn't silently cost a full extra loop.
+        while (
+          kart.checkpoint < checkpoints.length &&
+          checkpoints[kart.checkpoint].segmentIndex + windowSegs < segIdx
+        ) {
+          kart.checkpoint += 1;
+        }
+
+        // Lap split — race timer at this crossing minus the previous one.
+        // Tracked per-kart (not just in stats) so the HUD has a truthful split
+        // even before/without a stats entry. EVERY completed lap is timed:
+        // lapStartTime starts at 0 on GO, so the first crossing (lap 0 → 1)
+        // yields the real lap-1 time, not 0. (The old `kart.lap > 1` guard left
+        // lap 1 untimed, killing best-lap telemetry and 1-lap races entirely.)
         const stats = state.stats[kid];
+        const prevLapStart = (stats as any)?.lapStartTime ?? 0;
+        const lapTime = state.raceTimer - prevLapStart;
         if (stats) {
-          const lapTime = state.raceTimer - ((stats as any).lapStartTime || 0);
-          if (kart.lap > 1 && (stats.bestLapTime === null || lapTime < stats.bestLapTime)) {
+          if (stats.bestLapTime === null || lapTime < stats.bestLapTime) {
             stats.bestLapTime = lapTime;
           }
           (stats as any).lapStartTime = state.raceTimer;
@@ -2318,32 +2948,69 @@ function checkpointTick(c: any, track: ReturnType<typeof getTrack>): void {
           kartId: kart.id,
           lap: kart.lap,
           raceTime: state.raceTimer,
+          lapTime,
         });
 
         // Check if race finished for this kart
-        if (kart.lap >= RACE_LAP_COUNT) {
+        if (kart.lap >= state.lapCount) {
           state.finishedCount += 1;
           kart.finishPosition = state.finishedCount;
           kart.finishTime = state.raceTimer;
-          kart.speed = 0;
-          kart.velocity = vec3Zero();
+          // Don't hard-zero velocity here: kartPhysicsTick now steps finished
+          // karts with a coast input, so drag rolls them to a gentle stop and
+          // off the racing line over ~2s (early-finisher feel) instead of
+          // snapping to a dead halt the instant the line is crossed.
         }
       }
-      continue;
+    } else {
+      // Collect the next checkpoint when the kart is within the window of it OR
+      // has clearly driven PAST it: its segment sits ahead of the checkpoint
+      // segment by more than the window but well short of half a loop (a true
+      // wrap). The "passed" case forgives a checkpoint skipped by a fall+respawn
+      // just beyond it (e.g. overshooting the hairpin, whose tip checkpoint a
+      // respawn can land past) or a fast kart that jumped the window between
+      // ticks — without it that kart could never collect the missed checkpoint
+      // and laps would stop counting forever (bots AND humans). Loops so a single
+      // tick can credit every checkpoint already behind the kart.
+      while (kart.checkpoint < checkpoints.length) {
+        const cpSegIdx = checkpoints[kart.checkpoint].segmentIndex;
+        const segDiff = Math.abs(segIdx - cpSegIdx);
+        const wrappedDiff = Math.min(segDiff, totalSegments - segDiff);
+        const forwardGap = (segIdx - cpSegIdx + totalSegments) % totalSegments;
+        const passedCheckpoint =
+          forwardGap >= windowSegs && forwardGap < totalSegments / 2;
+
+        if (wrappedDiff < windowSegs || passedCheckpoint) {
+          kart.checkpoint += 1;
+        } else {
+          break;
+        }
+      }
     }
 
-    const cpSegIdx = checkpoints[nextCp].segmentIndex;
-    // Check if kart segment is within range of the checkpoint segment
-    const segDiff = Math.abs(segIdx - cpSegIdx);
-    const wrappedDiff = Math.min(segDiff, totalSegments - segDiff);
+    // --- Continuous, checkpoint-gated race progress (world units) ---
+    // Arc position along the loop = segment distance + projection of the
+    // offset from the segment center onto the segment's forward (XZ).
+    const dx = kart.position.x - seg.center.x;
+    const dz = kart.position.z - seg.center.z;
+    let along = seg.distance + (dx * seg.forward.x + dz * seg.forward.z);
 
-    if (wrappedDiff < totalSegments * 0.05) {
-      // Close enough — advance checkpoint
-      kart.checkpoint = nextCp + 1;
+    // Progress is gated to the checkpoint AFTER the next uncollected one, so
+    // cutting or reversing over the line can't fake a near-lap lead.
+    const gateIdx = kart.checkpoint + 1;
+    const gateDist =
+      gateIdx < checkpoints.length
+        ? segments[checkpoints[gateIdx].segmentIndex].distance
+        : trackLength;
+
+    // If the arc position is more than half a loop ahead of the gate, the
+    // kart has wrapped behind the start/finish line (grid start, reversing
+    // across the line) — count it as negative progress on the current lap.
+    if (along - gateDist > trackLength / 2) {
+      along -= trackLength;
     }
 
-    // Update race progress for ranking
-    kart.raceProgress = kart.lap * totalSegments + segIdx;
+    kart.raceProgress = kart.lap * trackLength + Math.min(along, gateDist);
   }
 }
 
@@ -2351,10 +3018,9 @@ function checkpointTick(c: any, track: ReturnType<typeof getTrack>): void {
 // Position ranking
 // ---------------------------------------------------------------------------
 
-function positionTick(c: any, track: ReturnType<typeof getTrack>): void {
+function positionTick(c: any): void {
   const state = c.state as RaceRoomState;
   const kartIds = Object.keys(state.players);
-  const totalSegments = track.segments.length;
 
   // Sort by race progress (finished karts ranked by finish position)
   kartIds.sort((aId, bId) => {
@@ -2384,10 +3050,22 @@ function broadcastSnapshot(c: any, tick: number): void {
   const kartIds = Object.keys(state.players);
   if (kartIds.length === 0) return;
 
+  // Per-kart input acks for client prediction (karts without a live
+  // connection — reconnect grace — report 0, i.e. "nothing processed").
+  const seqByPlayer: Record<string, number> = {};
+  for (const conn of c.conns.values()) {
+    const cs = conn.state as ConnState;
+    if (!cs.spectator) seqByPlayer[cs.playerId] = cs.lastProcessedSeq;
+  }
+
   const karts: RaceSnapshot["karts"] = {};
   for (const id of kartIds) {
     const k = state.players[id] as KartState;
     karts[id] = {
+      name: k.name,
+      carId: k.carId,
+      accentIndex: k.accentIndex,
+      isBot: k.isBot,
       position: k.position,
       heading: k.heading,
       speed: k.speed,
@@ -2397,6 +3075,7 @@ function broadcastSnapshot(c: any, tick: number): void {
       statusTimer: k.statusTimer,
       currentItem: k.currentItem,
       itemCharges: k.itemCharges,
+      heldItemActive: k.heldItemActive,
       lap: k.lap,
       checkpoint: k.checkpoint,
       boostTimer: k.boostTimer,
@@ -2406,6 +3085,7 @@ function broadcastSnapshot(c: any, tick: number): void {
       flowMeter: k.flowMeter,
       surface: k.surface,
       loadFactor: k.loadFactor,
+      lastProcessedSeq: seqByPlayer[id] ?? 0,
     };
   }
 

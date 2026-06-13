@@ -124,6 +124,56 @@ export interface SceneryObject {
 
 export type TrackId = "track1" | "neon-circuit";
 
+/**
+ * Static, sim-independent description of a track for the lobby/track picker
+ * and HUD. Lives next to the (heightfield-free) track helpers so clients can
+ * import it without pulling the server-only road mesh.
+ */
+export interface TrackMeta {
+  id: TrackId;
+  displayName: string;
+  /** Short flavor used as the default room name + visual theme tag */
+  theme: string;
+  /** Approximate loop length in world units (one lap) */
+  lengthM: number;
+  difficulty: "easy" | "medium" | "hard";
+}
+
+/** Difficulty tier for CPU opponents — scales their base speed + driving line. */
+export type BotDifficulty = "easy" | "medium" | "hard";
+
+/**
+ * Room game mode.
+ *  - "race"      — the standard multiplayer race (bots, items, forfeit on drop).
+ *  - "timeTrial" — solo against the clock + a localStorage ghost. The server
+ *    skips bots, allows a lone player to launch without the 2-player auto-start
+ *    gate, swaps the item table for a mushroom-only rotation, and never forfeits
+ *    a disconnect. The ghost itself is purely client-side (zero server state).
+ */
+export type RaceMode = "race" | "timeTrial";
+
+/**
+ * Per-room race configuration chosen at creation. The first player to connect
+ * to a fresh (waiting, unconfigured) room applies these via connection params;
+ * thereafter the room is authoritative and ignores further config attempts.
+ */
+export interface RoomSettings {
+  trackId: TrackId;
+  /** Race vs solo time-trial — chosen at creation, locked once the room runs. */
+  mode: RaceMode;
+  /** Laps to win — clamped to [LAP_COUNT_MIN, LAP_COUNT_MAX] */
+  lapCount: number;
+  /** When false, no item boxes are generated and rolls are suppressed */
+  itemsEnabled: boolean;
+  /**
+   * Fill empty grid slots with CPU opponents at race start. When undefined the
+   * server defaults to ON for races with fewer than RACE_MAX_PLAYERS humans.
+   */
+  botsEnabled: boolean;
+  /** Skill tier for the CPU opponents this room spawns. */
+  botDifficulty: BotDifficulty;
+}
+
 export interface TrackVisualTransform {
   position: Vec3;
   rotation: Vec3;
@@ -164,6 +214,22 @@ export interface KartInput {
   brake: boolean;
   drift: boolean;
   useItem: boolean;
+  /**
+   * True while the player holds the item key with a holdable item (shells,
+   * banana). The server exposes a defense point ~HELD_ITEM_DEFENSE_OFFSET units
+   * behind the kart that destroys incoming shells (consuming the held item).
+   * The fire happens via the dedicated useItem() action on release/tap, so this
+   * flag only carries the "trail it behind me" intent in the input stream.
+   */
+  heldBehind?: boolean;
+  /**
+   * Client-stamped, monotonically increasing input sequence number used for
+   * prediction/reconciliation. Optional because input builders (keyboard /
+   * touch merge) produce unstamped intents — the wire sender stamps seq just
+   * before transmission, and the server echoes the newest seq it has applied
+   * per kart in snapshots (lastProcessedSeq).
+   */
+  seq?: number;
 }
 
 export type DriftDirection = -1 | 0 | 1;
@@ -200,6 +266,8 @@ export interface KartState {
   name: string;
   carId: RaceCarId;
   accentIndex: number; // stable player accent slot assigned on join
+  /** CPU-controlled kart (no connection) — clients render a "CPU" badge. */
+  isBot?: boolean;
   position: Vec3;
   heading: number; // radians
   speed: number;
@@ -209,9 +277,17 @@ export interface KartState {
   checkpoint: number; // next checkpoint index (0-7)
   currentItem: ItemType | null;
   itemCharges: number;
+  /**
+   * The kart is trailing its held item behind it (rear-defense). True while the
+   * player holds the item key with a holdable item; clients render the trailed
+   * shell/banana at the rear anchor and an incoming shell that reaches the
+   * defense point is destroyed, consuming the item.
+   */
+  heldItemActive: boolean;
   status: KartStatus;
   statusTimer: number; // ms remaining on status effect
-  raceProgress: number; // used for position ranking
+  raceProgress: number; // continuous, checkpoint-gated progress in world units (lap * trackLength + arc distance)
+  segmentIndex: number; // nearest track segment, cached by the server physics step
   finishTime: number | null; // ms from race start
   finishPosition: number | null; // 1-maxPlayers
   boostTimer: number; // ms remaining on any boost
@@ -283,7 +359,15 @@ export interface RaceRoomState {
   hazards: HazardState[];
   itemBoxes: ItemBoxState[];
   phase: RacePhase;
+  /** Race vs solo time-trial mode (drives bots/items/solo-start/forfeit rules) */
+  mode: RaceMode;
   lapCount: number;
+  /** When false, item boxes are not generated and item rolls are suppressed */
+  itemsEnabled: boolean;
+  /** Fill empty grid slots with CPU opponents at race start */
+  botsEnabled: boolean;
+  /** Skill tier for CPU opponents this room spawns */
+  botDifficulty: BotDifficulty;
   raceTimer: number; // ms elapsed since race start
   maxPlayers: number;
   trackId: TrackId;
@@ -291,7 +375,7 @@ export interface RaceRoomState {
   phaseStartedAt: number;
   positions: string[]; // ordered player IDs (1st first)
   finishedCount: number;
-  readyPlayers: string[];
+  readyPlayers: Record<string, boolean>;
   rematchVotes: Record<string, boolean>;
   stats: Record<string, RaceStats>;
 }
@@ -304,6 +388,12 @@ export interface RaceSnapshot {
   karts: Record<
     string,
     {
+      // Identity — lets clients upsert karts they missed a kartJoined for
+      name: string;
+      carId: RaceCarId;
+      accentIndex: number;
+      /** CPU flag echoed so an upserted kart still renders its "CPU" badge */
+      isBot?: boolean;
       position: Vec3;
       heading: number;
       speed: number;
@@ -313,6 +403,8 @@ export interface RaceSnapshot {
       statusTimer: number;
       currentItem: ItemType | null;
       itemCharges: number;
+      /** Kart is trailing its held item behind it (rear-defense) */
+      heldItemActive: boolean;
       lap: number;
       checkpoint: number;
       boostTimer: number;
@@ -322,6 +414,8 @@ export interface RaceSnapshot {
       flowMeter: number;
       surface: SurfaceType;
       loadFactor: number;
+      /** Newest input seq the server has applied for this kart (prediction ack) */
+      lastProcessedSeq: number;
     }
   >;
   projectiles: ProjectileState[];
@@ -365,6 +459,13 @@ export interface LapCompletedEvent {
   kartId: string;
   lap: number;
   raceTime: number;
+  /**
+   * Duration of the lap that was just completed, ms. Server-computed (race
+   * timer at this crossing minus the previous crossing) so the HUD can show a
+   * truthful lap split without re-deriving it from raceTime deltas the client
+   * might have dropped a snapshot for. 0 for the opening (out-)lap.
+   */
+  lapTime: number;
 }
 
 export interface RaceFinishedEvent {
@@ -413,6 +514,39 @@ export interface RaceToastEvent {
   icon?: string;
 }
 
+/**
+ * A projectile/hazard/held-item was destroyed by a defensive contact (shell vs
+ * shell, shell vs banana, or a shell stopped by a trailed item). Position is
+ * the contact point so clients can spawn a small VFX/audio cue. `defenderId` is
+ * set when a kart's trailed item blocked the shell (so the HUD can credit it).
+ */
+export interface ItemDestroyedEvent {
+  x: number;
+  y: number;
+  z: number;
+  /** What collided — drives the cue color/sound. */
+  cause: "shellVsShell" | "shellVsBanana" | "trailBlock";
+  /** The kart whose trailed item blocked an incoming shell (trailBlock only). */
+  defenderId?: string;
+}
+
+/**
+ * Items a kart may trail behind it for rear defense (and which therefore use
+ * tap-vs-hold input handling). Speed/utility items fire immediately and are not
+ * holdable. Shared by the server (defense-point logic) and the client (RaceInput
+ * tap/hold timing, Kart trailed-item mesh, HUD hint).
+ */
+export const HOLDABLE_ITEMS: ReadonlySet<ItemType> = new Set<ItemType>([
+  "greenShell",
+  "redShell",
+  "blueShell",
+  "banana",
+]);
+
+export function isHoldableItem(item: ItemType | null | undefined): boolean {
+  return item != null && HOLDABLE_ITEMS.has(item);
+}
+
 export interface RaceJoinStateResult {
   state: RaceRoomState;
   playerId: string;
@@ -431,6 +565,10 @@ export interface RaceRoomSummary {
   maxPlayers: number;
   status: "waiting" | "racing";
   createdAt: number;
+  /** Surfaced by the room actor so lobby cards can show the chosen track/laps */
+  trackId?: TrackId;
+  trackName?: string;
+  lapCount?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +624,21 @@ export const ITEM_BOX_RESPAWN_TIME = 10000;
 export const PROJECTILE_MAX_AGE = 10000;
 
 // ---------------------------------------------------------------------------
+// Constants — Held-item rear defense
+// ---------------------------------------------------------------------------
+
+/** Distance behind the kart center where a trailed item sits / blocks shells. */
+export const HELD_ITEM_DEFENSE_OFFSET = 2.5;
+/** An incoming shell within this radius of the defense point is destroyed. */
+export const HELD_ITEM_DEFENSE_RADIUS = 1.5;
+/**
+ * Two newly-launched projectiles from the same owner ignore each other for
+ * this long (ms) so a multi-shot (tri-shell, rapid fire) can't self-destruct at
+ * the muzzle.
+ */
+export const PROJECTILE_PAIR_GRACE_MS = 500;
+
+// ---------------------------------------------------------------------------
 // Constants — Boost pads
 // ---------------------------------------------------------------------------
 
@@ -506,10 +659,62 @@ export const OUT_OF_BOUNDS_BOUNDARY = 6.0;
 
 export const RACE_MAX_PLAYERS = 4;
 export const RACE_LAP_COUNT = 3;
+/** Selectable lap range for room settings (RACE_LAP_COUNT is the default) */
+export const LAP_COUNT_MIN = 1;
+export const LAP_COUNT_MAX = 5;
 export const RACE_TIME_LIMIT = 300000; // 5 minutes max
 export const PRE_RACE_COUNTDOWN = 3000;
 export const RACE_FINISH_DISPLAY = 10000;
 export const KART_COLLISION_PUSH = 0.75;
+/**
+ * How long a mid-race disconnect holds the player's kart before the
+ * departure is finalized. A reconnecting client presenting the same
+ * playerToken within this window re-adopts its kart (same playerId,
+ * not a spectator — even while the race is running).
+ */
+export const RECONNECT_GRACE_MS = 12000;
+
+// ---------------------------------------------------------------------------
+// Constants — CPU bots
+// ---------------------------------------------------------------------------
+
+/**
+ * Base top-speed multiplier per difficulty tier — folded into the bot's
+ * KartInput so it shares the SAME shared physics step humans use (no parallel
+ * fork). Rubber-banding nudges this ±BOT_RUBBERBAND_RANGE around the human pack.
+ */
+export const BOT_BASE_SPEED_MULT: Record<BotDifficulty, number> = {
+  easy: 0.88,
+  medium: 0.95,
+  hard: 1.0,
+};
+
+/** Max ± fraction the rubber-band can scale a bot's speed by distance-to-human */
+export const BOT_RUBBERBAND_RANGE = 0.08;
+
+/** Default difficulty when a room doesn't pick one */
+export const DEFAULT_BOT_DIFFICULTY: BotDifficulty = "medium";
+
+/** Flavor names + cars cycled through when filling grid slots with bots */
+export const BOT_NAMES = ["Ratchet", "Torque", "Gasket", "Sprocket"] as const;
+
+// ---------------------------------------------------------------------------
+// Constants — Time trial / ghosts
+// ---------------------------------------------------------------------------
+
+/** Default mode for a fresh room (the lobby's "Time Trial" buttons override it) */
+export const DEFAULT_RACE_MODE: RaceMode = "race";
+
+/** Ghost keyframe sample rate (Hz) — 10 floats/sec keeps localStorage tiny. */
+export const GHOST_SAMPLE_HZ = 10;
+
+/** Cap a recording at ~10 minutes so a parked car can't grow it unbounded. */
+export const GHOST_MAX_DURATION_MS = 10 * 60 * 1000;
+
+/** localStorage schema version — bump to invalidate incompatible old ghosts.
+ *  v2: lapCount is part of the storage key, so a PB at one lap count no longer
+ *  blocks a PB at another. Old single-slot (v1) ghosts invalidate cleanly. */
+export const GHOST_STORAGE_VERSION = 2;
 
 // ---------------------------------------------------------------------------
 // Constants — Car selection and player accents
@@ -527,7 +732,9 @@ export const CAR_VARIANT_COLORS = PLAYER_ACCENT_COLORS;
 
 export const RACE_SERVER_TICK_INTERVAL = 16; // ~60Hz
 export const RACE_SNAPSHOT_INTERVAL = 50; // 20Hz
-export const RACE_INPUT_SEND_INTERVAL = 50; // 20Hz
+export const RACE_INPUT_SEND_INTERVAL = 33; // ~30Hz
+/** Remote karts/projectiles render this far behind the newest snapshot */
+export const RACE_INTERP_DELAY_MS = RACE_SNAPSHOT_INTERVAL * 2; // 100ms
 
 // ---------------------------------------------------------------------------
 // Constants — Lobby
@@ -540,7 +747,11 @@ export const MAX_RACE_ROOM_NAME_LEN = 40;
 // Constants — Rocket start
 // ---------------------------------------------------------------------------
 
-export const ROCKET_START_WINDOW = 6;
+// Timing windows are in server ticks (~16ms) measured from the GO tick to the
+// most recent throttle press. Widened to absorb the client input send cadence.
+export const ROCKET_START_PERFECT_WINDOW = 6; // ~100ms
+export const ROCKET_START_GOOD_WINDOW = 12; // ~200ms
+export const ROCKET_START_OK_WINDOW = 25; // ~400ms
 export const ROCKET_START_PERFECT_SPEED = 1.5;
 export const ROCKET_START_PERFECT_DURATION = 600;
 export const ROCKET_START_GOOD_SPEED = 0.9;
@@ -574,6 +785,8 @@ export const SLIPSTREAM_DECAY_TICKS = 30;
 export const TURN_CURVE_EXPONENT = 1.6;
 export const TURN_HIGH_SPEED_REDUCTION = 0.45;
 export const COUNTER_STEER_BONUS = 1.15;
+/** Ticks the counter-steer bonus stays active after a steering direction flip */
+export const COUNTER_STEER_WINDOW_TICKS = 12;
 
 // ---------------------------------------------------------------------------
 // Constants — Snap steering
@@ -598,7 +811,11 @@ export const BLUE_SHELL_GAP_THRESHOLD = 0.15;
 // Constants — Grip-budget / slip angle
 // ---------------------------------------------------------------------------
 
-export const SLIP_ANGLE_BUILDUP = 0.12;
+// Buildup scales steer-rate * speed into slip; recovery is proportional to the
+// current slip angle, so hard corners settle at a sustained ~0.15-0.25 rad
+// (equilibrium = buildup / (SLIP_ANGLE_RECOVERY * grip)) instead of recovery
+// instantly pinning slip back to zero.
+export const SLIP_ANGLE_BUILDUP = 1.1;
 export const SLIP_ANGLE_RECOVERY = 0.08;
 export const SLIP_ANGLE_MAX = 0.35;
 export const GRIP_LOSS_AT_MAX_SLIP = 0.45;

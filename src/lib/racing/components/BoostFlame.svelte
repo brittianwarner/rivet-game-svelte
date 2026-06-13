@@ -24,21 +24,27 @@
 
 	const FLAME_COLOR = "#FF6622";
 	const INNER_COLOR = "#FFAA44";
+	// White-hot core, pushed hardest past the bloom threshold for the brightest
+	// point of the flame (reads as combustion, not just a tinted glow).
+	const CORE_COLOR = "#FFFFEE";
 
 	// Use $derived for geometry dimensions so they react to intensity changes
 	const coneRadius = $derived(0.22 * intensity);
 	const coneHeight = $derived(0.9 * intensity);
 	const sphereRadius = $derived(0.18 * intensity);
+	const coreRadius = $derived(0.1 * intensity);
 
 	// Geometries rebuilt when intensity-derived dimensions change
 	let coneGeo = $state<THREE.ConeGeometry | undefined>(undefined);
 	let sphereGeo = $state<THREE.SphereGeometry | undefined>(undefined);
+	let coreGeo = $state<THREE.SphereGeometry | undefined>(undefined);
 
 	$effect(() => {
 		// Rebuild geometries when derived dimensions change
 		untrack(() => {
 			coneGeo?.dispose();
 			sphereGeo?.dispose();
+			coreGeo?.dispose();
 		});
 
 		const newCone = new THREE.ConeGeometry(coneRadius, coneHeight, 8);
@@ -46,6 +52,7 @@
 		coneGeo = newCone;
 
 		sphereGeo = new THREE.SphereGeometry(sphereRadius, 8, 6);
+		coreGeo = new THREE.SphereGeometry(coreRadius, 8, 6);
 	});
 
 	const flameMat = new THREE.MeshStandardMaterial({
@@ -69,14 +76,27 @@
 		blending: THREE.AdditiveBlending,
 	});
 
+	const coreMat = new THREE.MeshStandardMaterial({
+		color: CORE_COLOR,
+		emissive: CORE_COLOR,
+		emissiveIntensity: 6,
+		transparent: true,
+		opacity: 0.9,
+		depthWrite: false,
+		blending: THREE.AdditiveBlending,
+	});
+
 	onDestroy(() => {
 		coneGeo?.dispose();
 		sphereGeo?.dispose();
+		coreGeo?.dispose();
 		flameMat.dispose();
 		innerMat.dispose();
+		coreMat.dispose();
 	});
 
 	let groupRef: THREE.Group | undefined;
+	let coreRef: THREE.Mesh | undefined;
 	let elapsed = 0;
 
 	useTask((delta) => {
@@ -84,17 +104,29 @@
 
 		elapsed += delta;
 
-		// Flicker: rapidly oscillating scale and opacity
-		const flicker = 0.8 + Math.sin(elapsed * 35) * 0.15 + Math.sin(elapsed * 53) * 0.05;
+		// Flicker: rapidly oscillating scale and opacity. Layered sines at
+		// incommensurate rates keep the flame from looking like a clean pulse —
+		// it sputters. The tail (z) flicker is deeper than the girth (xz) so the
+		// flame visibly lengthens and snaps back like real exhaust.
+		const flicker =
+			0.78 + Math.sin(elapsed * 35) * 0.18 + Math.sin(elapsed * 53) * 0.08;
 		const scaleY = intensity * flicker;
-		const scaleXZ = intensity * (0.9 + Math.sin(elapsed * 42) * 0.1);
+		const scaleXZ = intensity * (0.88 + Math.sin(elapsed * 42) * 0.12);
 
 		groupRef.scale.set(scaleXZ, scaleXZ, scaleY);
 
-		// Flicker opacity
-		flameMat.opacity = 0.7 + Math.sin(elapsed * 40) * 0.15;
-		flameMat.emissiveIntensity = 2.5 + Math.sin(elapsed * 30) * 1.0;
-		innerMat.emissiveIntensity = 3.5 + Math.sin(elapsed * 45) * 1.5;
+		// Flicker opacity + emissive. The core is pushed hard and fast so it
+		// strobes brightest at the combustion point; the bloom pass smears it.
+		flameMat.opacity = 0.68 + Math.sin(elapsed * 40) * 0.17;
+		flameMat.emissiveIntensity = 2.6 + Math.sin(elapsed * 30) * 1.1;
+		innerMat.emissiveIntensity = 3.6 + Math.sin(elapsed * 45) * 1.6;
+		coreMat.emissiveIntensity = 5.5 + Math.sin(elapsed * 60) * 2.0;
+
+		// Subtle independent jitter on the core so it doesn't sit dead-center.
+		if (coreRef) {
+			coreRef.position.x = Math.sin(elapsed * 47) * 0.03;
+			coreRef.position.y = Math.cos(elapsed * 38) * 0.03;
+		}
 	});
 </script>
 
@@ -115,7 +147,9 @@
 			/>
 		{/if}
 
-		<!-- Inner bright core -->
+		<!-- Inner bright core — emissive past the bloom threshold; the bloom
+		     pass provides the glow (no PointLight, which forced a shader
+		     recompile every time a boost started or ended) -->
 		{#if sphereGeo}
 			<T.Mesh
 				geometry={sphereGeo}
@@ -123,12 +157,14 @@
 			/>
 		{/if}
 
-		<!-- Dynamic point light -->
-		<T.PointLight
-			color={FLAME_COLOR}
-			intensity={4 * intensity}
-			distance={5}
-			decay={2}
-		/>
+		<!-- White-hot combustion core — brightest point, pushed hardest past the
+		     bloom threshold so it blooms into a hot spark at the nozzle. -->
+		{#if coreGeo}
+			<T.Mesh
+				geometry={coreGeo}
+				material={coreMat}
+				oncreate={(ref) => { coreRef = ref; }}
+			/>
+		{/if}
 	</T.Group>
 {/if}

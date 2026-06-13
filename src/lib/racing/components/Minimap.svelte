@@ -12,7 +12,6 @@
 
 	const MAP_SIZE = 220;
 	const PADDING = 14;
-	const DOT_RADIUS = 4;
 	const LOCAL_DOT_RADIUS = 6;
 
 	const SAMPLE_INTERVAL = 2;
@@ -93,17 +92,47 @@
 		return marks;
 	});
 
+	// Item boxes — read the LIVE store (active/inactive), not the static track
+	// definition, so collected boxes dim until they respawn.
 	const itemBoxDots = $derived.by(() => {
-		const dots: { cx: number; cy: number }[] = [];
-		for (const ibz of track.itemBoxZones) {
-			for (const pos of ibz.positions) {
-				dots.push({
-					cx: toMapX(pos.x),
-					cy: toMapY(pos.z),
-				});
-			}
+		const dots: { cx: number; cy: number; active: boolean }[] = [];
+		for (const box of store.itemBoxes) {
+			dots.push({
+				cx: toMapX(box.position.x),
+				cy: toMapY(box.position.z),
+				active: box.active,
+			});
 		}
 		return dots;
+	});
+
+	// Projectiles (red) + hazards (yellow) — live threats on the map.
+	const projectileDots = $derived.by(() =>
+		store.projectiles.map((p) => ({
+			id: p.id,
+			cx: toMapX(p.position.x),
+			cy: toMapY(p.position.z),
+		})),
+	);
+
+	const hazardDots = $derived.by(() =>
+		store.hazards.map((h) => ({
+			id: h.id,
+			cx: toMapX(h.position.x),
+			cy: toMapY(h.position.z),
+		})),
+	);
+
+	// Start/finish tick — perpendicular line across segment 0.
+	const startTick = $derived.by(() => {
+		const seg = track.segments[0];
+		if (!seg) return null;
+		return {
+			x1: toMapX(seg.left.x),
+			y1: toMapY(seg.left.z),
+			x2: toMapX(seg.right.x),
+			y2: toMapY(seg.right.z),
+		};
 	});
 
 	const kartDots = $derived.by(() => {
@@ -113,15 +142,23 @@
 			cy: number;
 			color: string;
 			isLocal: boolean;
+			rotation: number;
 		}[] = [];
 
 		for (const kart of Object.values(store.karts)) {
+			// Forward (sin h, cos h) in world (x,z) → map (x,y). SVG rotate() is
+			// clockwise from +x with the triangle authored pointing up (-y).
+			const rotation =
+				(Math.atan2(Math.sin(kart.heading), Math.cos(kart.heading)) * 180) /
+					Math.PI +
+				90;
 			dots.push({
 				id: kart.id,
 				cx: toMapX(kart.position.x),
 				cy: toMapY(kart.position.z),
 				color: getPlayerAccentColor(kart.accentIndex),
 				isLocal: kart.id === store.localPlayerId,
+				rotation,
 			});
 		}
 
@@ -189,26 +226,62 @@
 			/>
 		{/each}
 
-		<!-- Item box indicators -->
+		<!-- Start/finish tick across segment 0 -->
+		{#if startTick}
+			<line
+				x1={startTick.x1}
+				y1={startTick.y1}
+				x2={startTick.x2}
+				y2={startTick.y2}
+				stroke="rgba(255, 255, 255, 0.9)"
+				stroke-width="2"
+				stroke-dasharray="2,2"
+			/>
+		{/if}
+
+		<!-- Item box indicators — live store, dimmed while inactive (collected) -->
 		{#each itemBoxDots as dot}
 			<circle
 				cx={dot.cx}
 				cy={dot.cy}
 				r={2.5}
-				fill="rgba(255, 217, 61, 0.8)"
+				fill={dot.active ? "rgba(255, 217, 61, 0.9)" : "rgba(255, 217, 61, 0.25)"}
 				stroke="none"
 			/>
 		{/each}
 
-		<!-- Kart dots — non-local first, then local on top -->
-		{#each kartDots.filter((d) => !d.isLocal) as dot (dot.id)}
+		<!-- Hazards (bananas) — yellow -->
+		{#each hazardDots as dot (dot.id)}
 			<circle
 				cx={dot.cx}
 				cy={dot.cy}
-				r={DOT_RADIUS}
+				r={2.5}
+				fill="#FFD93D"
+				stroke="rgba(0,0,0,0.5)"
+				stroke-width="0.75"
+			/>
+		{/each}
+
+		<!-- Projectiles (shells) — red -->
+		{#each projectileDots as dot (dot.id)}
+			<circle
+				cx={dot.cx}
+				cy={dot.cy}
+				r={2.5}
+				fill="#FF4444"
+				stroke="rgba(0,0,0,0.5)"
+				stroke-width="0.75"
+			/>
+		{/each}
+
+		<!-- Kart triangles — non-local first, then local on top -->
+		{#each kartDots.filter((d) => !d.isLocal) as dot (dot.id)}
+			<polygon
+				points="0,-5 3.5,4 -3.5,4"
 				fill={dot.color}
 				stroke="rgba(0,0,0,0.5)"
 				stroke-width="1"
+				transform={`translate(${dot.cx} ${dot.cy}) rotate(${dot.rotation})`}
 			/>
 		{/each}
 
@@ -216,36 +289,33 @@
 			<circle
 				cx={dot.cx}
 				cy={dot.cy}
-				r={localPulseRadius}
+				r={localPulseRadius + 1}
 				fill="none"
 				stroke={dot.color}
 				stroke-width="1.5"
 				opacity="0.5"
 			/>
-			<circle
-				cx={dot.cx}
-				cy={dot.cy}
-				r={LOCAL_DOT_RADIUS}
+			<polygon
+				points="0,-6 4,5 -4,5"
 				fill={dot.color}
 				stroke="#FFFFFF"
 				stroke-width="1.5"
+				transform={`translate(${dot.cx} ${dot.cy}) rotate(${dot.rotation})`}
 			/>
 		{/each}
 	</svg>
 </div>
 
 <style>
+	/* Placement is controlled by the page wrapper — the minimap is just a sized
+	   panel here so it no longer fights the HUD layout for the top-right corner. */
 	.minimap {
-		position: absolute;
-		top: 12px;
-		right: 12px;
 		width: 220px;
 		height: 220px;
 		background: rgba(0, 0, 0, 0.6);
 		border: 1px solid rgba(255, 255, 255, 0.15);
 		border-radius: 8px;
 		pointer-events: none;
-		z-index: 10;
 		overflow: hidden;
 	}
 </style>
